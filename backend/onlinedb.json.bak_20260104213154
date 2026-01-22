@@ -1,0 +1,388 @@
+{
+    "users": [
+        {
+            "id": 1,
+            "username": "admin",
+            "password": "password",
+            "role": "admin",
+            "name": "System Admin",
+            "company": "Customs",
+            "vessels": []
+        },
+        {
+            "id": 2,
+            "username": "staff",
+            "password": "password",
+            "role": "staff",
+            "name": "Officer Papadopoulos",
+            "company": "Customs",
+            "vessels": []
+        },
+        {
+            "id": 3,
+            "username": "user1",
+            "password": "password",
+            "role": "user",
+            "name": "John Captain",
+            "company": "Sea Fuel Ltd",
+            "vessels": [
+                "Vessel A",
+                "Vessel B"
+            ]
+        }
+    ],
+    "settings": {
+        "cutoff_hour": 14,
+        "weekly_schedule": {
+            "Friday": {
+                "limit": 10,
+                "open": true
+            },
+            "Monday": {
+                "limit": 3,
+                "open": true
+            },
+            "Saturday": {
+                "limit": 0,
+                "open": false
+            },
+            "Sunday": {
+                "limit": 0,
+                "open": false
+            },
+            "Thursday": {
+                "limit": 10,
+                "open": false
+            },
+            "Tuesday": {
+                "limit": 10,
+                "open": false
+            },
+            "Wednesday": {
+                "limit": 10,
+                "open": true
+            }
+        },
+        "lock_rules": {
+            "days_before": 1,
+            "time": "14:00"
+        }
+    },
+    "reference_data": {
+        "companies": [
+            "Sea Fuel Ltd",
+            "Aegean Oil",
+            "Crete Bunkering"
+        ],
+        "fuel_types": [
+            "Diesel",
+            "Unleaded",
+            "Heavy Fuel Oil"
+        ],
+        "employees": [
+            "Officer A",
+            "Officer B",
+            "Officer C"
+        ]
+    },
+    "reservations": [
+        {
+            "id": 1,
+            "created_at": "2026-01-04 19:35:51.784836",
+            "flags": [
+                "Port Closed on Tuesdays - Needs Special Approval",
+                "No Protocol Number - Not Approved"
+            ],
+            "status": "Pending",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-06",
+            "vessel": "Vessel A",
+            "fuel_type": "Diesel",
+            "quantity": "1000",
+            "payment_method": "Protocol",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "",
+            "location": {
+                "x": 94.66666655106978,
+                "y": 32.15020660652102
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 2
+        },
+        {
+            "id": 2,
+            "created_at": "2026-01-04 19:36:16.798442",
+            "flags": [
+                "Delayed reservation - Needs Approval",
+                "No Protocol Number - Not Approved"
+            ],
+            "status": "Pending",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-05",
+            "vessel": "Vessel A",
+            "fuel_type": "Diesel",
+            "quantity": "1000",
+            "payment_method": "Protocol",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "",
+            "location": {
+                "x": 94.66666655106978,
+                "y": 32.15020660652102
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1
+        },
+        {
+            "id": 3,
+            "created_at": "2026-01-04 19:50:12.308766",
+            "flags": [
+                "Delayed - Needs Approval"
+            ],
+            "status": "Pending",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-05",
+            "vessel": "Vessel B",
+            "fuel_type": "Heavy Fuel Oil",
+            "quantity": "500",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "",
+            "location": {
+                "x": 90.878787763191,
+                "y": 37.2440123766888
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1
+        },
+        {
+            "id": 4,
+            "created_at": "2026-01-04 19:51:36.586174",
+            "flags": [
+                "Delayed - Needs Approval"
+            ],
+            "status": "Pending",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-05",
+            "vessel": "Vessel B",
+            "fuel_type": "Heavy Fuel Oil",
+            "quantity": "500",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "",
+            "location": {
+                "x": 90.878787763191,
+                "y": 37.2440123766888
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1
+        },
+        {
+            "id": 5,
+            "created_at": "2026-01-04 19:51:47.747808",
+            "flags": [
+                "Delayed - Needs Approval"
+            ],
+            "status": "Pending",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-05",
+            "vessel": "Vessel B",
+            "fuel_type": "Heavy Fuel Oil",
+            "quantity": "500",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "",
+            "location": {
+                "x": 90.878787763191,
+                "y": 37.2440123766888
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1
+        },
+        {
+            "id": 6,
+            "created_at": "2026-01-04 20:06:31.737538",
+            "flags": [],
+            "status": "Approved",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-12",
+            "vessel": "Vessel A",
+            "fuel_type": "Diesel",
+            "quantity": "1000",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "Aegean Oil",
+            "location": {
+                "x": 71.10606049046372,
+                "y": 50.630060324238165
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1,
+            "assigned_employee": "Teo",
+            "employee_details": {
+                "id": 1,
+                "name": "Teo",
+                "phone": "42145"
+            }
+        },
+        {
+            "id": 7,
+            "created_at": "2026-01-04 20:07:02.390934",
+            "flags": [],
+            "status": "Approved",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-12",
+            "vessel": "Vessel B",
+            "fuel_type": "Diesel",
+            "quantity": "666",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "Aegean Oil",
+            "location": {
+                "x": 96.56060594500917,
+                "y": 29.520381437490162
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1,
+            "assigned_employee": "g",
+            "employee_details": {
+                "id": 1,
+                "name": "Teo",
+                "phone": "42145"
+            }
+        },
+        {
+            "id": 8,
+            "created_at": "2026-01-04 20:09:27.968964",
+            "flags": [],
+            "status": "Approved",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-12",
+            "vessel": "Vessel B",
+            "fuel_type": "Diesel",
+            "quantity": "111",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "",
+            "location": {
+                "x": 90.878787763191,
+                "y": 38.31015799639051
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 1,
+            "assigned_employee": "a"
+        },
+        {
+            "id": 9,
+            "created_at": "2026-01-04 20:09:48.328964",
+            "flags": [
+                "Overbooking - Needs Approval"
+            ],
+            "status": "Pending",
+            "assigned_employees": [],
+            "invoice_number": "",
+            "is_paid": false,
+            "date": "2026-01-12",
+            "vessel": "Vessel B",
+            "fuel_type": "Unleaded",
+            "quantity": "555",
+            "payment_method": "Electronic",
+            "mrn": "",
+            "protocol_number": "",
+            "supply_company": "Crete Bunkering",
+            "location": {
+                "x": 99.66666655106978,
+                "y": 27.64870405883003
+            },
+            "user_name": "John Captain",
+            "user_company": "Sea Fuel Ltd",
+            "required_staff": 2,
+            "assigned_employee": "a",
+            "employee_details": {
+                "id": 1,
+                "name": "Teo",
+                "phone": "42145"
+            }
+        }
+    ],
+    "daily_assignments": {
+        "2026-01-05": "Officer C",
+        "2026-01-06": "Officer A",
+        "2026-01-12": "Officer C, "
+    },
+    "announcements": [
+        {
+            "id": 1,
+            "text": "Never again",
+            "date": "2026-01-04"
+        },
+        {
+            "id": 2,
+            "text": "sffsdfd",
+            "date": "2026-01-04"
+        },
+        {
+            "id": 3,
+            "text": "dfdf",
+            "date": "2026-01-04"
+        },
+        {
+            "id": 4,
+            "text": "fdfdf",
+            "date": "2026-01-04"
+        }
+    ],
+    "employees": [
+        {
+            "name": "Teo",
+            "phone": "42145",
+            "id": 1
+        },
+        {
+            "id": 2,
+            "name": "g",
+            "phone": "111"
+        },
+        {
+            "name": "a",
+            "id": 3
+        }
+    ],
+    "daily_status": {
+        "2026-01-12": {
+            "finalized": false
+        }
+    }
+}
+}
