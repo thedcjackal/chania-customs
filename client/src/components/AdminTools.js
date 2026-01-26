@@ -5,17 +5,38 @@ import { API_URL } from '../config';
 export const UserManager = () => {
     const [users, setUsers] = useState([]); 
     const [modal, setModal] = useState(null); 
-    // FIX: Initialize with safe defaults so backend receives strings, not undefined
+    
+    // Initialize form with allowed_apps as an empty array
     const [form, setForm] = useState({ 
         name: '', surname: '', username: '', password: '', 
-        role: 'user', company: '', vessels: '' 
+        role: 'user', company: '', vessels: '', allowed_apps: [] 
     }); 
+
+    // Define available apps for the checkboxes
+    const availableApps = [
+        { id: 'fuel', name: '⛽ Εφοδιασμοί' },
+        { id: 'services', name: '📅 Υπηρεσίες' },
+        { id: 'personnel', name: '👥 Προσωπικό' },
+        { id: 'announcements', name: '📢 Ανακοινώσεις' },
+        { id: 'accounts', name: '🔐 Λογαριασμοί' }
+    ];
     
     useEffect(() => { 
         axios.get(`${API_URL}/admin/users`)
             .then(res => setUsers(res.data))
             .catch(err => console.error(err));
     }, []); 
+
+    const toggleApp = (appId) => {
+        const currentApps = form.allowed_apps || [];
+        if (currentApps.includes(appId)) {
+            // Remove app
+            setForm({ ...form, allowed_apps: currentApps.filter(id => id !== appId) });
+        } else {
+            // Add app
+            setForm({ ...form, allowed_apps: [...currentApps, appId] });
+        }
+    };
 
     const save = async () => { 
         // Logic to split vessels string into array
@@ -25,7 +46,8 @@ export const UserManager = () => {
 
         const p = {
             ...form, 
-            allowed_apps: ['fuel'], // Default permission
+            // We now use the actual selections from the form, no longer hardcoded
+            allowed_apps: form.allowed_apps || [], 
             vessels: vesselsArray
         }; 
         
@@ -47,17 +69,29 @@ export const UserManager = () => {
         }
     }; 
 
+    // Helper to open modal for editing
+    const openEdit = (u) => {
+        setForm({
+            ...u,
+            // Ensure allowed_apps is an array (handle nulls from old data)
+            allowed_apps: Array.isArray(u.allowed_apps) ? u.allowed_apps : [],
+            // Convert vessels array back to string for the input field
+            vessels: Array.isArray(u.vessels) ? u.vessels.join(', ') : u.vessels
+        });
+        setModal(u);
+    };
+
     return (
         <div className="admin-section">
             <div className="control-bar">
                 <button onClick={()=>{
-                    // FIX: Reset form explicitly on "New User" click
-                    setForm({ name: '', surname: '', username: '', password: '', role: 'user', company: '', vessels: '' }); 
+                    // Reset form explicitly on "New User" click
+                    setForm({ name: '', surname: '', username: '', password: '', role: 'user', company: '', vessels: '', allowed_apps: [] }); 
                     setModal({});
                 }}>+ Νέος Χρήστης</button>
             </div>
             <table>
-                <thead><tr><th>Όνομα</th><th>User</th><th>Ρόλος</th><th>Εταιρεία</th><th>Ενέργειες</th></tr></thead>
+                <thead><tr><th>Όνομα</th><th>User</th><th>Ρόλος</th><th>Εταιρεία</th><th>Apps</th><th>Ενέργειες</th></tr></thead>
                 <tbody>
                     {users.filter(u=>u.role!=='root_admin').map(u => (
                         <tr key={u.id}>
@@ -65,7 +99,13 @@ export const UserManager = () => {
                             <td>{u.username}</td>
                             <td>{u.role}</td>
                             <td>{u.company}</td>
-                            <td><button className="small-btn" onClick={()=>{setForm(u); setModal(u);}}>Edit</button><button className="small-btn danger" onClick={()=>del(u.id)}>Del</button></td>
+                            <td style={{fontSize:'0.8rem', color:'#555'}}>
+                                {Array.isArray(u.allowed_apps) ? u.allowed_apps.join(', ') : ''}
+                            </td>
+                            <td>
+                                <button className="small-btn" onClick={()=>openEdit(u)}>Edit</button>
+                                <button className="small-btn danger" onClick={()=>del(u.id)}>Del</button>
+                            </td>
                         </tr>
                     ))}
                 </tbody>
@@ -73,7 +113,7 @@ export const UserManager = () => {
             {modal && (
                 <div className="modal-overlay">
                     <div className="modal-content">
-                        <h3>Χρήστης</h3>
+                        <h3>{modal.id ? 'Επεξεργασία Χρήστη' : 'Νέος Χρήστης'}</h3>
                         <div className="form-grid">
                             <label>Όνομα<input value={form.name} onChange={e=>setForm({...form, name:e.target.value})}/></label>
                             <label>Επώνυμο<input value={form.surname} onChange={e=>setForm({...form, surname:e.target.value})}/></label>
@@ -82,6 +122,28 @@ export const UserManager = () => {
                             <label>Ρόλος<select value={form.role} onChange={e=>setForm({...form, role:e.target.value})}><option value="user">Χρήστης</option><option value="staff">Προσωπικό</option><option value="admin">Διαχειριστής</option></select></label>
                             <label>Εταιρεία<input value={form.company} onChange={e=>setForm({...form, company:e.target.value})}/></label>
                             <label>Σκάφη (κόμμα)<input value={form.vessels} onChange={e=>setForm({...form, vessels:e.target.value})}/></label>
+                            
+                            {/* APP SELECTION CHECKBOXES */}
+                            <div style={{gridColumn: '1/-1', marginTop: 10, borderTop: '1px solid #eee', paddingTop: 10}}>
+                                <label style={{fontWeight:'bold', display:'block', marginBottom: 5}}>Επιτρεπόμενες Εφαρμογές:</label>
+                                <div style={{display:'flex', gap: 10, flexWrap: 'wrap'}}>
+                                    {availableApps.map(app => (
+                                        <label key={app.id} style={{
+                                            display:'flex', alignItems:'center', gap: 5, 
+                                            background: form.allowed_apps?.includes(app.id) ? '#e3f2fd' : '#f5f5f5', 
+                                            padding: '5px 10px', borderRadius: 4, cursor: 'pointer', border: '1px solid #ccc'
+                                        }}>
+                                            <input 
+                                                type="checkbox" 
+                                                checked={form.allowed_apps?.includes(app.id) || false}
+                                                onChange={() => toggleApp(app.id)}
+                                            />
+                                            {app.name}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
                         </div>
                         <div style={{marginTop:20}}>
                             <button onClick={save}>Αποθήκευση</button> 

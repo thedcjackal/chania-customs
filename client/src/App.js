@@ -11,7 +11,6 @@ import {
 
 // Import Sub-Applications
 import { FuelApp } from './apps/FuelApp';
-import { PersonnelApp } from './apps/PersonnelApp';
 import { ServicesApp } from './apps/ServicesApp';
 import { AnnouncementsApp } from './apps/AnnouncementsApp';
 import { AccountManager } from './apps/AccountManager';
@@ -59,8 +58,6 @@ const App = () => {
         switch (activeApp) {
             case 'fuel_app':
                 return <FuelApp user={user} onExit={handleExitApp} />;
-            case 'personnel_app':
-                return <PersonnelApp user={user} onExit={handleExitApp} />;
             case 'services_app':
                 return <ServicesApp user={user} onExit={handleExitApp} />;
             case 'announcements_app':

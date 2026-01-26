@@ -52,5 +52,28 @@ export const Login = ({ onLogin, onBack }) => {
 
 export const ServicePortal = ({ onNavigate, user, onLogout }) => {
     const isAllowed = (appKey) => user.allowed_apps && user.allowed_apps.includes(appKey);
-    return (<div className="portal-container"><header className="portal-header"><h3>Ηλεκτρονικές Υπηρεσίες</h3><div style={{display:'flex', gap:10, alignItems:'center'}}><span>{user.name} {user.surname}</span><button className="secondary small-btn" onClick={onLogout}>Έξοδος</button></div></header><div className="app-grid"><div className={`app-card ${!isAllowed('fuel') ? 'disabled' : ''}`} onClick={() => isAllowed('fuel') && onNavigate('fuel_app')}><img src="/ship-icon.png" className="icon" alt="" /><h3>Προγραμματισμός Εφοδιασμού Τουριστικών Σκαφών</h3></div><div className={`app-card ${!isAllowed('personnel') ? 'disabled' : ''}`} onClick={() => isAllowed('personnel') && onNavigate('personnel_app')}><span style={{fontSize:50}}>👥</span><h3>Προσωπικό</h3></div><div className={`app-card ${!isAllowed('services') ? 'disabled' : ''}`} onClick={() => isAllowed('services') && onNavigate('services_app')}><span style={{fontSize:50}}>📅</span><h3>Υπηρεσίες & Βάρδιες</h3></div>{isAllowed('announcements') && <div className="app-card" onClick={() => onNavigate('announcements_app')}><span style={{fontSize:50}}>📢</span><h3>Διαχείριση Ανακοινώσεων</h3></div>}{isAllowed('accounts') && <div className="app-card" onClick={() => onNavigate('accounts_app')}><span style={{fontSize:50}}>🔐</span><h3>Διαχείριση Λογαριασμών</h3></div>}</div></div>);
+    return (
+        <div className="portal-container">
+            <header className="portal-header">
+                <h3>Ηλεκτρονικές Υπηρεσίες</h3>
+                <div style={{display:'flex', gap:10, alignItems:'center'}}>
+                    <span>{user.name} {user.surname}</span>
+                    <button className="secondary small-btn" onClick={onLogout}>Έξοδος</button>
+                </div>
+            </header>
+            <div className="app-grid">
+                <div className={`app-card ${!isAllowed('fuel') ? 'disabled' : ''}`} onClick={() => isAllowed('fuel') && onNavigate('fuel_app')}>
+                    <img src="/ship-icon.png" className="icon" alt="" />
+                    <h3>Προγραμματισμός Εφοδιασμού Τουριστικών Σκαφών</h3>
+                </div>
+                {/* Personnel App Removed */}
+                <div className={`app-card ${!isAllowed('services') ? 'disabled' : ''}`} onClick={() => isAllowed('services') && onNavigate('services_app')}>
+                    <span style={{fontSize:50}}>📅</span>
+                    <h3>Υπηρεσίες & Βάρδιες</h3>
+                </div>
+                {isAllowed('announcements') && <div className="app-card" onClick={() => onNavigate('announcements_app')}><span style={{fontSize:50}}>📢</span><h3>Διαχείριση Ανακοινώσεων</h3></div>}
+                {isAllowed('accounts') && <div className="app-card" onClick={() => onNavigate('accounts_app')}><span style={{fontSize:50}}>🔐</span><h3>Διαχείριση Λογαριασμών</h3></div>}
+            </div>
+        </div>
+    );
 };
