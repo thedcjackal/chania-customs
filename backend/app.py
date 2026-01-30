@@ -19,7 +19,8 @@ except ImportError:
     exit(1)
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+# Enable CORS for all routes, allowing specific origins
+CORS(app, resources={r"/*": {"origins": ["https://customs-client.vercel.app", "http://localhost:3000"]}})
 
 # ==========================================
 # 1. DATABASE CONNECTION
