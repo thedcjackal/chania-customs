@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_URL } from '../config';
-import { Trash2, Send, CheckCircle, AlertTriangle, Edit2, X } from 'lucide-react';
+import { Trash2, Send, CheckCircle, Edit2, X } from 'lucide-react'; // REMOVED AlertTriangle
 
 export const AnnouncementsApp = ({ user, onExit }) => {
     const [announcements, setAnnouncements] = useState([]);
@@ -112,7 +112,7 @@ export const AnnouncementsApp = ({ user, onExit }) => {
                         <Send size={18} /> {editId ? 'Ενημέρωση' : 'Δημοσίευση'}
                     </button>
                     {editId && (
-                        <button type="button" onClick={handleCancelEdit} style={{ background: '#e0e0e0', color: '#333', border: 'none', padding: '12px 25px', borderRadius: '8px', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <button type="button" onClick={handleCancelEdit} style={{ background: '#e0e0e0', color: '333', border: 'none', padding: '12px 25px', borderRadius: '8px', fontSize: '1rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <X size={18} /> Ακύρωση
                         </button>
                     )}

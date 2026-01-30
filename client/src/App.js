@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { API_URL } from './config';
-import { Phone, Mail, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { Phone, Mail, ChevronDown, ChevronRight } from 'lucide-react'; // REMOVED 'X'
 
 // --- IMPORT COMPONENTS ---
 import { 
@@ -189,7 +189,6 @@ function App() {
                                                         {isExpanded ? <ChevronDown size={20} color="#666"/> : <ChevronRight size={20} color="#666"/>}
                                                     </div>
                                                     <h3>{dept.name}</h3>
-                                                    {/* Spacer for centering balance */}
                                                     <div style={{width: 20}}></div> 
                                                 </div>
                                                 
@@ -328,10 +327,9 @@ function App() {
                     display: grid;
                     grid-template-columns: 1fr 1fr;
                     gap: 15px;
-                    align-items: start; /* Prevents cards stretching to match height */
+                    align-items: start; 
                 }
                 
-                /* Responsive fallback to 1 column on smaller screens */
                 @media (max-width: 700px) {
                     .dept-list {
                         grid-template-columns: 1fr;

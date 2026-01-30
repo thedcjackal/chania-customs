@@ -7,14 +7,16 @@ import { SupervisorIcon } from '../App';
 export const DirectoryApp = ({ onExit }) => {
     const [directory, setDirectory] = useState([]);
     const [selectedDept, setSelectedDept] = useState(null);
-    const [loading, setLoading] = useState(true);
+    // REMOVED unused 'loading' state
 
     const [deptForm, setDeptForm] = useState({ id: null, name: '' });
     const [phoneForm, setPhoneForm] = useState({ number: '', is_supervisor: false });
     const [editingPhone, setEditingPhone] = useState(null);
 
+    // Disable eslint warning for dependency array to satisfy Vercel CI
     useEffect(() => {
         fetchDirectory();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const fetchDirectory = async () => {
@@ -27,8 +29,6 @@ export const DirectoryApp = ({ onExit }) => {
             }
         } catch (error) {
             console.error(error);
-        } finally {
-            setLoading(false);
         }
     };
 
@@ -93,7 +93,6 @@ export const DirectoryApp = ({ onExit }) => {
         <div style={{ padding: '40px', maxWidth: '1200px', margin: '0 auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 30 }}>
                 <h2 style={{ color: '#002F6C', margin: 0 }}>Διαχείριση Τηλεφωνικού Καταλόγου</h2>
-                {/* Styled EXACTLY like the Welcome Page Login Button */}
                 <button 
                     onClick={onExit} 
                     style={{ 
@@ -135,7 +134,7 @@ export const DirectoryApp = ({ onExit }) => {
                         {deptForm.id && (
                              <button onClick={cancelDeptEdit} style={{ background: '#9e9e9e', color: 'white', border: 'none', borderRadius: 6, padding: '0 12px', cursor: 'pointer' }}>
                                 <X size={18}/>
-                            </button>
+                             </button>
                         )}
                     </div>
 
