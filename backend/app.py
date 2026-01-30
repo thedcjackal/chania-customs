@@ -69,13 +69,22 @@ def is_scoreable_day(d_date, special_dates_set):
     """ Returns True if date is Saturday (6), Sunday (7), or in Special Dates. """
     if isinstance(d_date, str):
         d_date = dt.strptime(d_date, '%Y-%m-%d').date()
+    
+    # 1. Weekend Check
     _, _, iso_day = d_date.isocalendar()
     if iso_day in [6, 7]: return True
+    
+    # 2. Exact Date Check
     if str(d_date) in special_dates_set: return True
+    
+    # 3. Recurring Check (Year 2000)
+    recurring_key = f"2000-{d_date.strftime('%m-%d')}"
+    if recurring_key in special_dates_set: return True
+    
     return False
 
 # --- UI BALANCE CALCULATION ---
-def calculate_db_balance():
+def calculate_db_balance(start_str=None, end_str=None):
     conn = get_db()
     if not conn: return []
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -89,40 +98,61 @@ def calculate_db_balance():
     special_dates_set = set()
     try:
         cur.execute("SELECT date FROM special_dates")
-        for r in cur.fetchall(): special_dates_set.add(str(r['date']))
+        for r in cur.fetchall(): 
+            special_dates_set.add(str(r['date']))
     except: pass
     
     conn.close()
+
+    if start_str and end_str:
+        view_start = dt.strptime(start_str, '%Y-%m').date().replace(day=1)
+        end_dt = dt.strptime(end_str, '%Y-%m').date()
+        view_end = (end_dt + relativedelta(months=1)) - timedelta(days=1)
+    else:
+        view_start = dt.min.date()
+        view_end = dt.max.date()
 
     stats = {}
     for e in employees:
         stats[e['id']] = {
             'name': e['name'], 
-            'total': 0,             # Normal Score (Main Balance)
-            'total_off_balance': 0, # Off-Balance Score (Secondary Balance)
-            'effective_total': 0,
+            'total': 0,             
+            'total_off_balance': 0, 
+            'effective_total': 0,   
+            'sk_score': 0,          
             'duty_counts': {d['id']: 0 for d in duties},
             '_weekly_tracker': {d['id']: set() for d in duties if d.get('is_weekly')} 
         }
 
+    for e in employees:
+        eid_str = str(e['id'])
+        for d in duties:
+            for conf in d.get('shift_config', []):
+                h = int(conf.get('handicaps', {}).get(eid_str, 0))
+                if h > 0:
+                    stats[e['id']]['effective_total'] += h
+
     for s in schedule:
         eid = s['employee_id']
         if not eid or eid not in stats: continue
-        duty = next((d for d in duties if d['id'] == s['duty_id']), None)
-        if not duty: continue
+        
         s_date = dt.strptime(str(s['date']), '%Y-%m-%d').date()
         
-        # Get Config
+        if s_date < view_start or s_date > view_end:
+            continue
+
+        duty = next((d for d in duties if d['id'] == s['duty_id']), None)
+        if not duty: continue
+        
         shift_idx = s.get('shift_index', 0)
         conf = {}
         if duty.get('shift_config') and len(duty['shift_config']) > shift_idx:
             conf = duty['shift_config'][shift_idx]
 
-        # Check Default Protection (Weekday Workhours)
         is_protected_default = False
         if conf.get('is_within_hours') and conf.get('default_employee_id') == eid:
             if not is_scoreable_day(s_date, special_dates_set):
-                is_protected_default = True # 0 points
+                is_protected_default = True 
 
         if duty.get('is_weekly'):
             iso_year, iso_week, _ = s_date.isocalendar()
@@ -131,31 +161,34 @@ def calculate_db_balance():
                 stats[eid]['duty_counts'][duty['id']] += 1
                 stats[eid]['_weekly_tracker'][duty['id']].add(week_id)
             
-            # Weekly Score Logic (Sat/Sun/Special)
             if not is_protected_default and is_scoreable_day(s_date, special_dates_set):
                 if duty.get('is_off_balance'):
                     stats[eid]['total_off_balance'] += 1
                 else:
                     stats[eid]['total'] += 1
+                    stats[eid]['effective_total'] += 1
                 
         elif duty.get('is_off_balance'): 
             stats[eid]['duty_counts'][duty['id']] += 1
             if not is_protected_default:
                 stats[eid]['total_off_balance'] += 1
         else: 
-            # Normal Duty
             stats[eid]['duty_counts'][duty['id']] += 1
             if not is_protected_default:
                 stats[eid]['total'] += 1
+                stats[eid]['effective_total'] += 1
+
+        is_normal = not duty.get('is_weekly') and not duty.get('is_special') and not duty.get('is_off_balance')
+        if is_normal:
+            if s_date.weekday() in [5, 6]:
+                stats[eid]['sk_score'] += 1
 
     for eid, stat in stats.items():
-        # effective_total is primarily the Normal Score
-        stat['effective_total'] = stat['total'] 
         if '_weekly_tracker' in stat: del stat['_weekly_tracker']
                     
     return list(stats.values())
 
-def load_state_for_scheduler():
+def load_state_for_scheduler(start_date=None):
     conn = get_db()
     if not conn: return None
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -176,6 +209,19 @@ def load_state_for_scheduler():
         cur.execute("SELECT date FROM special_dates")
         special_dates = [str(r['date']) for r in cur.fetchall()]
     except: pass
+    
+    preferences = {}
+    try:
+        if start_date:
+            m_str = start_date.strftime('%Y-%m')
+            cur.execute("CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER, month_str TEXT, prefer_double_sk BOOLEAN, PRIMARY KEY (user_id, month_str))")
+            conn.commit()
+            cur.execute("SELECT user_id FROM user_preferences WHERE month_str = %s AND prefer_double_sk = true", (m_str,))
+            rows = cur.fetchall()
+            for r in rows:
+                preferences[int(r['user_id'])] = True
+    except Exception as e:
+        print(f"Error loading preferences: {e}")
 
     conn.close()
     rot_q = state['rotation_queues'] if state and state['rotation_queues'] else {}
@@ -187,7 +233,8 @@ def load_state_for_scheduler():
             "duties": duties, "special_dates": special_dates, 
             "rotation_queues": rot_q, "next_round_queues": next_q
         }, 
-        "schedule": schedule, "unavailability": unavail
+        "schedule": schedule, "unavailability": unavail,
+        "preferences": preferences
     }
 
 # ==========================================
@@ -197,22 +244,20 @@ def run_auto_scheduler_logic(db, start_date, end_date):
     logs = []
     def log(msg): logs.append(msg)
     
-    log(f"🚀 STARTING SCHEDULER: {start_date} to {end_date}")
+    # SILENT LOGGING
 
     employees = [{'id': int(e['id']), 'name': e['name']} for e in db['employees']]
     emp_map = {e['id']: e['name'] for e in employees}
+    double_duty_prefs = db.get('preferences', {})
+
     if not employees:
         log("❌ CRITICAL: No employees found.")
         return [], {"rotation_queues": {}, "next_round_queues": {}, "logs": logs}
     
     duties = db['service_config']['duties']
     special_dates_set = set(db['service_config'].get('special_dates', []))
-    log(f"   📅 Loaded {len(special_dates_set)} special dates.")
-
-    # Clean Memory
-    raw_schedule = db['schedule']
-    schedule = [] 
-    history = []
+    
+    raw_schedule = db['schedule']; schedule = []; history = []
     cleaned = 0
     for s in raw_schedule:
         try:
@@ -222,8 +267,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 else: schedule.append(s)
             else: history.append(s)
         except: pass
-    log(f"   🧹 Cleared {cleaned} old assignments.")
-
+    
     unavail_map = {(int(u['employee_id']), str(u['date'])) for u in db['unavailability']}
     rot_q = db['service_config']['rotation_queues']
     nxt_q = db['service_config']['next_round_queues']
@@ -244,17 +288,13 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         return False
 
     def get_q(key, excluded_ids=[]):
-        cq = rot_q.get(key, [])
-        nq = nxt_q.get(key, [])
+        cq = rot_q.get(key, []); nq = nxt_q.get(key, [])
         valid_ids = set(e['id'] for e in employees)
-        
         cq = [int(x) for x in cq if int(x) in valid_ids and int(x) not in excluded_ids]
         nq = [int(x) for x in nq if int(x) in valid_ids and int(x) not in excluded_ids]
-        
         known = set(cq) | set(nq)
         missing = [e['id'] for e in employees if e['id'] not in known and e['id'] not in excluded_ids]
         if missing: cq.extend(missing)
-        
         if not cq: 
             if nq: cq = [e['id'] for e in employees if e['id'] in nq]; nq = []
             else: cq = [e['id'] for e in employees if e['id'] not in excluded_ids]
@@ -262,273 +302,194 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         return cq, nq
 
     def rotate_assigned_user(key, user_id):
-        cq = rot_q.get(key, [])
-        nq = nxt_q.get(key, [])
+        cq = rot_q.get(key, []); nq = nxt_q.get(key, [])
         cq = [int(x) for x in cq]; nq = [int(x) for x in nq]
         if user_id in cq: cq.remove(user_id); nq.append(user_id)
         elif user_id in nq: nq.remove(user_id); nq.append(user_id)
         rot_q[key] = cq; nxt_q[key] = nq
 
-    # --- PHASE 0: ASSIGN WORKHOURS (PRIORITY) ---
-    log("🔹 Phase 0: Workhours Assignments")
-    
+    # PHASE 0: Workhours
     workhour_slots = []
     for duty in duties:
         if duty.get('is_special'): continue
         for sh_idx in range(duty['shifts_per_day']):
-            conf = duty['shift_config'][sh_idx]
-            if conf.get('is_within_hours'):
-                workhour_slots.append({'duty': duty, 'sh_idx': sh_idx, 'conf': conf})
-
+            if duty['shift_config'][sh_idx].get('is_within_hours'): workhour_slots.append({'duty': duty, 'sh_idx': sh_idx, 'conf': duty['shift_config'][sh_idx]})
     curr = start_date
     while curr <= end_date:
         d_str = curr.strftime('%Y-%m-%d')
-        
         for slot in workhour_slots:
             duty = slot['duty']; sh_idx = slot['sh_idx']; conf = slot['conf']
-            
-            if not is_in_period(curr, duty.get('active_range')): continue
-            if not is_in_period(curr, conf.get('active_range')): continue
-            if any(s['date'] == d_str and int(s['duty_id']) == int(duty['id']) and int(s['shift_index']) == sh_idx for s in schedule): continue
-            if duty.get('is_weekly') and curr.weekday() == 6 and not is_in_period(curr, duty.get('sunday_active_range')): continue
-
-            default_id = conf.get('default_employee_id')
-            excl_ids = [int(x) for x in conf.get('excluded_ids', [])]
-            cover_key = f"cover_{duty['id']}_{sh_idx}"
+            if not is_in_period(curr, duty.get('active_range')) or not is_in_period(curr, conf.get('active_range')): continue
+            if any(s['date']==d_str and int(s['duty_id'])==int(duty['id']) and int(s['shift_index'])==sh_idx for s in schedule): continue
+            if duty.get('is_weekly') and curr.weekday()==6 and not is_in_period(curr, duty.get('sunday_active_range')): continue
             
             chosen_id = None
-            needs_cover = False
-            if is_scoreable_day(curr, special_dates_set): needs_cover = True
-            elif not default_id: needs_cover = True
-            elif default_id in excl_ids: needs_cover = True
-            elif (default_id, d_str) in unavail_map: needs_cover = True
-            elif is_user_busy(default_id, curr, schedule, ignore_yesterday=True): needs_cover = True
-            
+            default_id = conf.get('default_employee_id')
+            needs_cover = is_scoreable_day(curr, special_dates_set) or not default_id or default_id in [int(x) for x in conf.get('excluded_ids',[])] or (default_id, d_str) in unavail_map or is_user_busy(default_id, curr, schedule, True)
             if not needs_cover: chosen_id = default_id
-            
             if not chosen_id:
-                cq, nq = get_q(cover_key, excl_ids)
-                candidates = cq + nq
-                for cand in candidates:
-                    if (cand, d_str) in unavail_map: continue
-                    if is_user_busy(cand, curr, schedule, ignore_yesterday=False): continue
-                    chosen_id = cand; break
-                if chosen_id: rotate_assigned_user(cover_key, chosen_id)
-
-            if chosen_id:
-                schedule.append({"date": d_str, "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen_id, "manually_locked": False})
+                cq, nq = get_q(f"cover_{duty['id']}_{sh_idx}", [int(x) for x in conf.get('excluded_ids',[])])
+                for cand in (cq+nq):
+                    if (cand, d_str) not in unavail_map and not is_user_busy(cand, curr, schedule, False): chosen_id = cand; break
+                if chosen_id: rotate_assigned_user(f"cover_{duty['id']}_{sh_idx}", chosen_id)
+            if chosen_id: schedule.append({"date": d_str, "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen_id, "manually_locked": False})
             else:
-                log(f"   ⚠️ {d_str} {duty['name']}: No Workhours staff available.")
-
+                log(f"⚠️ {d_str} {duty['name']} (Βάρδια {sh_idx+1}): Δεν βρέθηκε διαθέσιμος υπάλληλος.")
         curr += timedelta(days=1)
 
-    # --- PHASE 1: WEEKLY DUTIES ---
-    weekly_duties = [d for d in duties if d.get('is_weekly') and not d.get('is_special')]
-    log(f"🔹 Phase 1: {len(weekly_duties)} Standard Weekly Duties")
-
-    for duty in weekly_duties:
+    # PHASE 1: Weekly
+    for duty in [d for d in duties if d.get('is_weekly') and not d.get('is_special')]:
         for sh_idx in range(duty['shifts_per_day']):
-            conf = duty['shift_config'][sh_idx]
-            if conf.get('is_within_hours'): continue 
-
-            q_key = f"weekly_{duty['id']}_sh_{sh_idx}"
-            excl_ids = [int(x) for x in conf.get('excluded_ids', [])]
-            
-            last_week_end = start_date - timedelta(days=1)
-            prev_assignment = next((s for s in (history+schedule) if s['date'] == last_week_end.strftime('%Y-%m-%d') and int(s['duty_id']) == int(duty['id']) and int(s['shift_index']) == sh_idx), None)
-            
-            if prev_assignment:
-                prev_id = int(prev_assignment['employee_id'])
-                cq, _ = get_q(q_key, excl_ids)
-                if prev_id in cq and cq[0] == prev_id: rotate_assigned_user(q_key, prev_id)
-
+            if duty['shift_config'][sh_idx].get('is_within_hours'): continue
+            q_key = f"weekly_{duty['id']}_sh_{sh_idx}"; excl = [int(x) for x in duty['shift_config'][sh_idx].get('excluded_ids', [])]
             curr = start_date
             while curr <= end_date:
-                days_since_mon = curr.weekday()
-                week_start_mon = curr - timedelta(days=days_since_mon)
-                week_end_sun = week_start_mon + timedelta(days=6)
-                chosen_employee = None
-                
-                check_day = curr - timedelta(days=1)
-                if check_day >= week_start_mon:
-                    prev_s = next((s for s in (history+schedule) if s['date'] == check_day.strftime('%Y-%m-%d') and int(s['duty_id']) == int(duty['id']) and int(s['shift_index']) == sh_idx), None)
-                    if prev_s: chosen_employee = int(prev_s['employee_id'])
+                w_start = curr - timedelta(days=curr.weekday()); w_end = w_start + timedelta(days=6)
+                chosen = None; cq, nq = get_q(q_key, excl)
+                for cand in (cq+nq):
+                    if (cand, curr.strftime('%Y-%m-%d')) not in unavail_map: chosen = cand; break
+                if chosen:
+                    rotate_assigned_user(q_key, chosen)
+                    t = curr
+                    while t <= w_end and t <= end_date:
+                        if not (t.weekday()==6 and not is_in_period(t, duty.get('sunday_active_range'))):
+                            if not any(s['date']==t.strftime('%Y-%m-%d') and int(s['duty_id'])==int(duty['id']) and int(s['shift_index'])==sh_idx for s in schedule):
+                                schedule.append({"date": t.strftime('%Y-%m-%d'), "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen, "manually_locked": False})
+                        t += timedelta(days=1)
+                else:
+                     if curr <= end_date:
+                        log(f"⚠️ Εβδομάδα {curr.strftime('%Y-%m-%d')} {duty['name']}: Δεν βρέθηκε διαθέσιμος υπάλληλος.")
 
-                if not chosen_employee:
-                    cq, nq = get_q(q_key, excl_ids)
-                    candidates = cq + nq
-                    for candidate in candidates:
-                        d_str = curr.strftime('%Y-%m-%d')
-                        if (candidate, d_str) in unavail_map: continue
-                        chosen_employee = candidate; break
-                    if chosen_employee: rotate_assigned_user(q_key, chosen_employee)
+                curr = w_end + timedelta(days=1)
 
-                if chosen_employee:
-                    t_day = curr
-                    while t_day <= week_end_sun and t_day <= end_date:
-                        if t_day.weekday() == 6 and not is_in_period(t_day, duty.get('sunday_active_range')):
-                            t_day += timedelta(days=1); continue
-                        d_s = t_day.strftime('%Y-%m-%d')
-                        if not any(s['date'] == d_s and int(s['duty_id']) == int(duty['id']) and int(s['shift_index']) == sh_idx for s in schedule):
-                            schedule.append({"date": d_s, "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen_employee, "manually_locked": False})
-                        t_day += timedelta(days=1)
-                curr = week_end_sun + timedelta(days=1)
-
-    # --- PHASE 2: DAILY DUTIES ---
-    normal_duties = [d for d in duties if not d.get('is_weekly') and not d.get('is_special')]
-    log(f"🔹 Phase 2: {len(normal_duties)} Standard Daily Duties")
-
+    # PHASE 2: Daily
     curr = start_date
     while curr <= end_date:
         d_str = curr.strftime('%Y-%m-%d')
-        daily_slots = []
-        for duty in normal_duties:
-            if not is_in_period(curr, duty.get('active_range')): continue
-            for sh_idx in range(duty['shifts_per_day']):
-                conf = duty['shift_config'][sh_idx]
-                if conf.get('is_within_hours'): continue 
-                if not is_in_period(curr, conf.get('active_range')): continue
-                if any(s['date'] == d_str and int(s['duty_id']) == int(duty['id']) and int(s['shift_index']) == sh_idx for s in schedule): continue
-                daily_slots.append({'duty': duty, 'sh_idx': sh_idx, 'conf': conf})
-
-        random.shuffle(daily_slots)
-
-        for slot in daily_slots:
-            duty = slot['duty']; sh_idx = slot['sh_idx']; conf = slot['conf']
-            q_key = f"normal_{duty['id']}_sh_{sh_idx}"
-            excl_ids = [int(x) for x in conf.get('excluded_ids', [])]
-            cq, nq = get_q(q_key, excl_ids)
+        slots = []
+        for d in [x for x in duties if not x.get('is_weekly') and not x.get('is_special')]:
+             if is_in_period(curr, d.get('active_range')):
+                 for i in range(d['shifts_per_day']):
+                     if not d['shift_config'][i].get('is_within_hours') and is_in_period(curr, d['shift_config'][i].get('active_range')):
+                         if not any(s['date']==d_str and int(s['duty_id'])==int(d['id']) and int(s['shift_index'])==i for s in schedule):
+                             slots.append({'d':d, 'i':i, 'c':d['shift_config'][i]})
+        random.shuffle(slots)
+        for x in slots:
+            cq, nq = get_q(f"normal_{x['d']['id']}_sh_{x['i']}", [int(z) for z in x['c'].get('excluded_ids',[])])
             chosen = None
-            candidates = cq + nq
-            for candidate in candidates:
-                if (candidate, d_str) in unavail_map: continue
-                if is_user_busy(candidate, curr, schedule, ignore_yesterday=False): continue
-                chosen = candidate; break
-            
+            for cand in (cq+nq):
+                if (cand, d_str) not in unavail_map and not is_user_busy(cand, curr, schedule, False): chosen = cand; break
             if chosen:
-                rotate_assigned_user(q_key, chosen)
-                schedule.append({"date": d_str, "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen, "manually_locked": False})
+                rotate_assigned_user(f"normal_{x['d']['id']}_sh_{x['i']}", chosen)
+                schedule.append({"date": d_str, "duty_id": x['d']['id'], "shift_index": x['i'], "employee_id": chosen, "manually_locked": False})
             else:
-                log(f"   ⚠️ {d_str} {duty['name']}: No staff available.")
+                log(f"⚠️ {d_str} {x['d']['name']} (Βάρδια {x['i']+1}): Δεν βρέθηκε διαθέσιμος υπάλληλος.")
         curr += timedelta(days=1)
 
-    # --- PHASE 3 & 4: DUAL BALANCING ---
-    score_duties_normal = [d['id'] for d in duties if not d.get('is_off_balance') and not d.get('is_special')]
-    score_duties_off = [d['id'] for d in duties if d.get('is_off_balance') and not d.get('is_special')]
-    
-    def get_detailed_scores(target_duties, return_details=False):
-        scores = {e['id']: 0 for e in employees}
-        details = {e['id']: [] for e in employees}
-        
+    # Balancing Helpers
+    lookback_date = (start_date - relativedelta(months=2)).replace(day=1)
+    def get_detailed_scores(target_duties):
+        sc = {e['id']: 0 for e in employees}
+        for e in employees:
+            eid_str = str(e['id'])
+            for d in duties:
+                if d['id'] in target_duties:
+                    for c in d.get('shift_config',[]): sc[e['id']] += int(c.get('handicaps',{}).get(eid_str,0))
         for s in history + schedule:
-            try:
-                did = int(s['duty_id'])
-                if did not in target_duties: continue 
-                
-                s_date = dt.strptime(s['date'], '%Y-%m-%d').date()
-                eid = int(s['employee_id'])
-                if eid not in scores: continue
-                
-                d_obj = next((d for d in duties if d['id'] == did), None)
-                if not d_obj: continue
-                
-                conf = d_obj['shift_config'][s.get('shift_index',0)]
-                points = 0
-                
-                # Default Protection: 0 points on Weekdays
-                if conf.get('is_within_hours') and conf.get('default_employee_id') == eid:
-                    if not is_scoreable_day(s_date, special_dates_set):
-                        points = 0 
-                    else:
-                        points = 1 # Weekend Default
-                else:
-                    if d_obj.get('is_weekly'):
-                        if is_scoreable_day(s_date, special_dates_set): points = 1
-                    else:
-                        points = 1 
+            if int(s['duty_id']) not in target_duties: continue
+            s_d = dt.strptime(s['date'], '%Y-%m-%d').date()
+            if s_d < lookback_date or s_d > end_date: continue
+            d_o = next((d for d in duties if d['id']==int(s['duty_id'])), None)
+            conf = d_o['shift_config'][int(s.get('shift_index',0))]
+            if conf.get('is_within_hours') and conf.get('default_employee_id')==int(s['employee_id']) and not is_scoreable_day(s_d, special_dates_set): continue
+            sc[int(s['employee_id'])] += 1
+        return sc
 
-                if points > 0:
-                    scores[eid] += points
-                    if return_details:
-                        details[eid].append(f"{s_date.strftime('%d/%m')} {d_obj['name']}")
-            except: pass
-            
-        if return_details: return scores, details
-        return scores
-
-    def balance_dataset(phase_name, target_duties):
-        log(f"🔹 {phase_name}: Balancing")
-        
-        # Log Initial
-        init_s, init_d = get_detailed_scores(target_duties, return_details=True)
-        sorted_init = sorted(init_s.items(), key=lambda x: x[1], reverse=True)
-        log("   📊 Initial Scores:")
-        for eid, score in sorted_init:
-            det_str = ", ".join(init_d[eid])
-            log(f"      - {emp_map.get(eid)}: {score} pts ({det_str})")
-
-        iterations = 0
-        while iterations < 100:
-            scores = get_detailed_scores(target_duties)
-            sorted_ids = sorted(scores.keys(), key=lambda k: scores[k])
-            min_id = sorted_ids[0]; max_id = sorted_ids[-1]
-            
-            if scores[max_id] - scores[min_id] <= 1:
-                log("   ✨ Balanced."); break
-            
-            candidates = [s for s in schedule if int(s['employee_id']) == max_id and not s.get('manually_locked') and int(s['duty_id']) in target_duties]
-            candidates = [c for c in candidates if start_date <= dt.strptime(c['date'], '%Y-%m-%d').date() <= end_date]
-            random.shuffle(candidates)
-            
-            swapped = False
-            receivers = sorted_ids[:len(sorted_ids)//2 + 1]
-            
-            for target_id in receivers:
-                if target_id == max_id: continue
-                if scores[max_id] <= scores[target_id]: continue 
-                
-                for cand in candidates:
-                    c_date = dt.strptime(cand['date'], '%Y-%m-%d').date()
-                    d_obj = next((d for d in duties if d['id'] == cand['duty_id']), None)
-                    if not d_obj: continue
-                    conf = d_obj['shift_config'][cand['shift_index']]
-                    
-                    # 1. SWAP PROTECTION: Default Weekday
-                    if conf.get('is_within_hours') and conf.get('default_employee_id') == max_id:
-                        if not is_scoreable_day(c_date, special_dates_set): continue
-
-                    # 2. SWAP PROTECTION: Weekly Duties (Sat/Sun) cannot be swapped
+    def run_balance(target):
+        for _ in range(100):
+            sc = get_detailed_scores(target)
+            s_ids = sorted(sc.keys(), key=lambda k: sc[k])
+            if sc[s_ids[-1]] - sc[s_ids[0]] <= 1: break
+            max_id = s_ids[-1]
+            cands = [s for s in schedule if int(s['employee_id'])==max_id and int(s['duty_id']) in target and not s.get('manually_locked')]
+            cands = [c for c in cands if start_date <= dt.strptime(c['date'], '%Y-%m-%d').date() <= end_date]
+            random.shuffle(cands); swapped = False
+            for target_id in s_ids[:len(s_ids)//2+1]:
+                if target_id == max_id or sc[max_id] <= sc[target_id]: continue
+                for c in cands:
+                    c_date = dt.strptime(c['date'], '%Y-%m-%d').date()
+                    d_obj = next((d for d in duties if d['id']==int(c['duty_id'])),None)
+                    conf = d_obj['shift_config'][int(c.get('shift_index',0))]
+                    if conf.get('is_within_hours') and conf.get('default_employee_id')==max_id and not is_scoreable_day(c_date, special_dates_set): continue
                     if d_obj.get('is_weekly'): continue
-
-                    # Valuable?
-                    points = 1 # Normal duty = 1
-                    if points == 0: continue 
-
-                    excl = [int(x) for x in conf.get('excluded_ids', [])]
-                    if target_id in excl: continue
-                    if (target_id, cand['date']) in unavail_map: continue
-                    if is_user_busy(target_id, c_date, schedule, ignore_yesterday=False): continue
-                    
-                    cand['employee_id'] = target_id
-                    log(f"     🔄 Swap: {d_obj['name']} {cand['date']} | {emp_map.get(max_id)} -> {emp_map.get(target_id)}")
-                    swapped = True
-                    break
+                    if target_id in [int(x) for x in conf.get('excluded_ids',[])] or (target_id, c['date']) in unavail_map or is_user_busy(target_id, c_date, schedule, False): continue
+                    c['employee_id'] = target_id; swapped = True; break
                 if swapped: break
             if not swapped: break
-            iterations += 1
-            
-        final_s, final_d = get_detailed_scores(target_duties, return_details=True)
-        sorted_final = sorted(final_s.items(), key=lambda x: x[1], reverse=True)
-        log(f"🏁 {phase_name} FINAL:")
-        for eid, score in sorted_final:
-            det_str = ", ".join(final_d[eid])
-            log(f"   - {emp_map.get(eid)}: {score} pts ({det_str})")
 
-    if score_duties_normal:
-        balance_dataset("Phase 3 (Normal)", score_duties_normal)
-    
-    if score_duties_off:
-        balance_dataset("Phase 4 (Off-Balance)", score_duties_off)
+    run_balance([d['id'] for d in duties if not d.get('is_off_balance') and not d.get('is_special')])
+    run_balance([d['id'] for d in duties if d.get('is_off_balance') and not d.get('is_special')])
+
+    # PHASE 5: SK Balancing
+    sk_win_start = (end_date - relativedelta(months=5)).replace(day=1)
+    for _ in range(200):
+        sk = {e['id']: 0 for e in employees}
+        for s in history+schedule:
+            if dt.strptime(s['date'],'%Y-%m-%d').date() < sk_win_start: continue
+            d_o = next((d for d in duties if d['id']==int(s['duty_id'])),None)
+            if not d_o or d_o.get('is_weekly') or d_o.get('is_special') or d_o.get('is_off_balance'): continue
+            if dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6]: sk[int(s['employee_id'])] += 1
+        
+        s_sk = sorted(sk.items(), key=lambda x:x[1])
+        if s_sk[-1][1] - s_sk[0][1] <= 1: break
+        
+        swapped = False
+        for i in range(len(s_sk)-1, 0, -1):
+            max_id = s_sk[i][0]
+            for j in range(i):
+                min_id = s_sk[j][0]
+                if sk[max_id] - sk[min_id] <= 1: continue
+                
+                max_we = [s for s in schedule if int(s['employee_id'])==max_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6] and not s.get('manually_locked')]
+                max_we = [s for s in max_we if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+                
+                min_wd = [s for s in schedule if int(s['employee_id'])==min_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() not in [5,6] and not s.get('manually_locked')]
+                min_wd = [s for s in min_wd if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+                
+                random.shuffle(max_we); random.shuffle(min_wd)
+                for we in max_we:
+                    if (min_id, we['date']) in unavail_map or is_user_busy(min_id, dt.strptime(we['date'],'%Y-%m-%d').date(), schedule, False): continue
+                    for wd in min_wd:
+                        if (max_id, wd['date']) in unavail_map or is_user_busy(max_id, dt.strptime(wd['date'],'%Y-%m-%d').date(), schedule, False): continue
+                        we['employee_id'] = min_id; wd['employee_id'] = max_id
+                        swapped = True; break
+                    if swapped: break
+                if swapped: break
+            if swapped: break
+        if not swapped: break
+
+    # PHASE 6: Double Duty
+    target_users = [uid for uid in double_duty_prefs if any(int(s['employee_id'])==uid for s in schedule)]
+    for uid in target_users:
+        my_we = [s for s in schedule if int(s['employee_id'])==uid and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6] and not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+        if len(my_we) != 2: continue
+        d1 = dt.strptime(my_we[0]['date'], '%Y-%m-%d').date(); d2 = dt.strptime(my_we[1]['date'], '%Y-%m-%d').date()
+        if abs((d1-d2).days) == 1: continue
+        
+        needed = d1 + timedelta(days=1) if d1.weekday()==5 else d1 - timedelta(days=1)
+        target = next((s for s in schedule if s['date']==needed.strftime('%Y-%m-%d') and not s.get('manually_locked') and not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)), None)
+        move = my_we[1]
+        
+        if not target:
+             needed = d2 + timedelta(days=1) if d2.weekday()==5 else d2 - timedelta(days=1)
+             target = next((s for s in schedule if s['date']==needed.strftime('%Y-%m-%d') and not s.get('manually_locked') and not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)), None)
+             move = my_we[0]
+        
+        if target:
+            oid = int(target['employee_id'])
+            if (oid, move['date']) not in unavail_map and not is_user_busy(oid, dt.strptime(move['date'],'%Y-%m-%d').date(), schedule, False):
+                 if (uid, target['date']) not in unavail_map and not is_user_busy(uid, dt.strptime(target['date'],'%Y-%m-%d').date(), schedule, False):
+                     move['employee_id'] = oid; target['employee_id'] = uid
 
     return schedule, {"rotation_queues": rot_q, "next_round_queues": nxt_q, "logs": logs}
 
@@ -606,20 +567,36 @@ def manage_employees():
     finally:
         conn.close()
 
-@app.route('/api/announcements', methods=['GET', 'POST', 'DELETE'])
+@app.route('/api/announcements', methods=['GET', 'POST', 'DELETE', 'PUT'])
 def announcements():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
+        # Schema migration for new columns
+        cur.execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS body TEXT")
+        cur.execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS is_important BOOLEAN DEFAULT FALSE")
+        conn.commit()
+
         if request.method == 'GET':
             cur.execute("SELECT * FROM announcements ORDER BY date DESC")
             res = cur.fetchall()
             for r in res: r['date'] = str(r['date'])
             return jsonify(res)
         if request.method == 'POST':
-            cur.execute("INSERT INTO announcements (text, date) VALUES (%s, CURRENT_DATE)", (request.json.get('text'),))
+            data = request.json
+            cur.execute("""
+                INSERT INTO announcements (text, body, is_important, date) 
+                VALUES (%s, %s, %s, CURRENT_DATE)
+            """, (data.get('text'), data.get('body', ''), data.get('is_important', False)))
             conn.commit()
             return jsonify({"success":True})
+        if request.method == 'PUT':
+            data = request.json
+            cur.execute("""
+                UPDATE announcements SET text=%s, body=%s, is_important=%s WHERE id=%s
+            """, (data.get('text'), data.get('body', ''), data.get('is_important', False), data.get('id')))
+            conn.commit()
+            return jsonify({"success": True})
         if request.method == 'DELETE':
             cur.execute("DELETE FROM announcements WHERE id = %s", (request.args.get('id'),))
             conn.commit()
@@ -694,22 +671,61 @@ def daily_status():
     finally:
         conn.close()
 
+# --- ADMIN SETTINGS ROUTES ---
+
 @app.route('/api/admin/settings', methods=['GET', 'POST'])
 def settings():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
+        # Ensure new columns exist (Migration logic)
+        cur.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS signee_name TEXT")
+        cur.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS declaration_deadline INTEGER")
+        conn.commit()
+
         if request.method == 'GET':
             cur.execute("SELECT * FROM app_settings WHERE id = 1")
-            return jsonify(cur.fetchone())
+            row = cur.fetchone()
+            # Fix serialization for time objects (Postgres TIME -> Python datetime.time)
+            if row and row.get('lock_time'):
+                row['lock_time'] = str(row['lock_time'])
+            return jsonify(row)
+            
         if request.method == 'POST':
             s = request.json
             cur.execute("""
-                UPDATE app_settings SET lock_days=%s, lock_time=%s, weekly_schedule=%s 
+                UPDATE app_settings 
+                SET lock_days=%s, lock_time=%s, weekly_schedule=%s, declaration_deadline=%s, signee_name=%s
                 WHERE id=1
-            """, (s['lock_rules']['days_before'], s['lock_rules']['time'], Json(s['weekly_schedule'])))
+            """, (s['lock_rules']['days_before'], s['lock_rules']['time'], Json(s['weekly_schedule']), s.get('declaration_deadline'), s.get('signee_name')))
             conn.commit()
             return jsonify(s)
+    finally:
+        conn.close()
+
+@app.route('/api/admin/schedule_metadata', methods=['GET', 'POST'])
+def schedule_metadata():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("CREATE TABLE IF NOT EXISTS schedule_metadata (month_str TEXT PRIMARY KEY, protocol_num TEXT, protocol_date TEXT)")
+        conn.commit()
+
+        if request.method == 'GET':
+            m = request.args.get('month')
+            cur.execute("SELECT * FROM schedule_metadata WHERE month_str = %s", (m,))
+            return jsonify(cur.fetchone() or {})
+        
+        if request.method == 'POST':
+            d = request.json
+            cur.execute("""
+                INSERT INTO schedule_metadata (month_str, protocol_num, protocol_date)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (month_str) DO UPDATE 
+                SET protocol_num = EXCLUDED.protocol_num, protocol_date = EXCLUDED.protocol_date
+            """, (d['month'], d['protocol_num'], d['protocol_date']))
+            conn.commit()
+            return jsonify({"success": True})
     finally:
         conn.close()
 
@@ -758,7 +774,8 @@ def config_route():
             try:
                 cur.execute("SELECT * FROM special_dates ORDER BY date")
                 rows = cur.fetchall()
-                special_dates = [str(r['date']) for r in rows]
+                # Return list of objects {date, description}
+                special_dates = [{'date': str(r['date']), 'description': r['description']} for r in rows]
             except: pass
             
             return jsonify({
@@ -818,15 +835,16 @@ def schedule_route():
 @app.route('/api/services/run_scheduler', methods=['POST'])
 def run_scheduler_route():
     try:
-        db = load_state_for_scheduler()
-        if not db: return jsonify({"error": "DB Load Failed"}), 500
-    except Exception as e:
-        print(traceback.format_exc())
-        return jsonify({"error": "DB Load Logic Error", "details": str(e)}), 500
+        req = request.json
+        try:
+            start_date = dt.strptime(req['start'] + '-01', '%Y-%m-%d').date()
+        except:
+             return jsonify({"error": "Date Parsing Error"}), 400
 
-    req = request.json
-    try:
-        start_date = dt.strptime(req['start'] + '-01', '%Y-%m-%d').date()
+        # Pass start_date to load preferences
+        db = load_state_for_scheduler(start_date)
+        if not db: return jsonify({"error": "DB Load Failed"}), 500
+
         end_date_month = dt.strptime(req['end'] + '-01', '%Y-%m-%d')
         end_date = (end_date_month + relativedelta(months=1) - timedelta(days=1)).date()
     except Exception as e:
@@ -871,7 +889,10 @@ def run_scheduler_route():
 
 @app.route('/api/services/balance', methods=['GET'])
 def get_balance():
-    return jsonify(calculate_db_balance())
+    # Pass params: start & end
+    start_str = request.args.get('start')
+    end_str = request.args.get('end')
+    return jsonify(calculate_db_balance(start_str, end_str))
 
 @app.route('/api/services/unavailability', methods=['GET', 'POST', 'DELETE'])
 def s_unavail():
@@ -897,6 +918,35 @@ def s_unavail():
     finally:
         conn.close()
 
+@app.route('/api/services/preferences', methods=['GET', 'POST'])
+def s_prefs():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Ensure table exists
+        cur.execute("CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER, month_str TEXT, prefer_double_sk BOOLEAN, PRIMARY KEY (user_id, month_str))")
+        conn.commit()
+
+        if request.method == 'GET':
+            uid = request.args.get('user_id')
+            m_str = request.args.get('month')
+            cur.execute("SELECT prefer_double_sk FROM user_preferences WHERE user_id = %s AND month_str = %s", (uid, m_str))
+            res = cur.fetchone()
+            return jsonify({"prefer_double_sk": res['prefer_double_sk'] if res else False})
+
+        if request.method == 'POST':
+            d = request.json
+            cur.execute("""
+                INSERT INTO user_preferences (user_id, month_str, prefer_double_sk) 
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, month_str) 
+                DO UPDATE SET prefer_double_sk = EXCLUDED.prefer_double_sk
+            """, (d['user_id'], d['month'], d['value']))
+            conn.commit()
+            return jsonify({"success": True})
+    finally:
+        conn.close()
+
 @app.route('/api/services/clear_schedule', methods=['POST'])
 def clear_schedule():
     conn = get_db()
@@ -916,6 +966,10 @@ def special_dates_route():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
+        # FIX: Ensure table exists
+        cur.execute("CREATE TABLE IF NOT EXISTS special_dates (date DATE PRIMARY KEY, description TEXT)")
+        conn.commit()
+
         if request.method == 'GET':
             cur.execute("SELECT * FROM special_dates ORDER BY date")
             rows = cur.fetchall()
@@ -924,7 +978,7 @@ def special_dates_route():
         if request.method == 'POST':
             d = request.json.get('date')
             desc = request.json.get('description', '')
-            cur.execute("INSERT INTO special_dates (date, description) VALUES (%s, %s) ON CONFLICT (date) DO NOTHING", (d, desc))
+            cur.execute("INSERT INTO special_dates (date, description) VALUES (%s, %s) ON CONFLICT (date) DO UPDATE SET description = EXCLUDED.description", (d, desc))
             conn.commit()
             return jsonify({"success": True})
         if request.method == 'DELETE':
@@ -932,6 +986,105 @@ def special_dates_route():
             cur.execute("DELETE FROM special_dates WHERE date = %s", (d,))
             conn.commit()
             return jsonify({"success": True})
+    finally:
+        conn.close()
+
+# --- DIRECTORY APP ROUTES ---
+@app.route('/api/directory', methods=['GET'])
+def get_directory():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # 1. Update Schema: Add 'sequence' column if not exists
+        cur.execute("CREATE TABLE IF NOT EXISTS directory_departments (id SERIAL PRIMARY KEY, name TEXT UNIQUE, sequence INTEGER DEFAULT 999)")
+        cur.execute("CREATE TABLE IF NOT EXISTS directory_phones (id SERIAL PRIMARY KEY, dept_id INTEGER REFERENCES directory_departments(id) ON DELETE CASCADE, number TEXT, is_supervisor BOOLEAN DEFAULT FALSE)")
+        
+        # Migration: Ensure 'sequence' exists (safe to run multiple times)
+        try:
+            cur.execute("ALTER TABLE directory_departments ADD COLUMN IF NOT EXISTS sequence INTEGER DEFAULT 999")
+            cur.execute("ALTER TABLE directory_phones DROP COLUMN IF EXISTS name") # Remove name column if it exists
+        except: pass
+        conn.commit()
+
+        # Fetch ordered by sequence
+        cur.execute("SELECT * FROM directory_departments ORDER BY sequence ASC, id ASC")
+        depts = cur.fetchall()
+        
+        cur.execute("SELECT * FROM directory_phones ORDER BY is_supervisor DESC, id ASC")
+        phones = cur.fetchall()
+        
+        result = []
+        for d in depts:
+            d_phones = [p for p in phones if p['dept_id'] == d['id']]
+            result.append({**d, 'phones': d_phones})
+            
+        return jsonify(result)
+    finally:
+        conn.close()
+
+@app.route('/api/directory/departments', methods=['POST', 'PUT', 'DELETE'])
+def manage_departments():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        if request.method == 'POST':
+            # Handle Reordering
+            if request.json.get('action') == 'reorder':
+                id_list = request.json.get('ordered_ids', [])
+                for idx, dept_id in enumerate(id_list):
+                    cur.execute("UPDATE directory_departments SET sequence = %s WHERE id = %s", (idx, dept_id))
+                conn.commit()
+                return jsonify({"success": True})
+            
+            # Normal Create
+            name = request.json.get('name')
+            # Set sequence to max + 1
+            cur.execute("SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM directory_departments")
+            next_seq = cur.fetchone()['next_seq']
+            cur.execute("INSERT INTO directory_departments (name, sequence) VALUES (%s, %s) RETURNING id", (name, next_seq))
+            conn.commit()
+            return jsonify({"success": True})
+
+        if request.method == 'PUT':
+            cur.execute("UPDATE directory_departments SET name = %s WHERE id = %s", (request.json.get('name'), request.json.get('id')))
+            conn.commit()
+            return jsonify({"success": True})
+
+        if request.method == 'DELETE':
+            cur.execute("DELETE FROM directory_departments WHERE id = %s", (request.args.get('id'),))
+            conn.commit()
+            return jsonify({"success": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/directory/phones', methods=['POST', 'PUT', 'DELETE'])
+def manage_phones():
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        if request.method == 'POST':
+            d = request.json
+            # Name removed
+            cur.execute("INSERT INTO directory_phones (dept_id, number, is_supervisor) VALUES (%s, %s, %s)", 
+                        (d['dept_id'], d['number'], d.get('is_supervisor', False)))
+            conn.commit()
+            return jsonify({"success": True})
+        if request.method == 'PUT':
+            d = request.json
+            cur.execute("UPDATE directory_phones SET number=%s, is_supervisor=%s WHERE id=%s", 
+                        (d['number'], d.get('is_supervisor', False), d['id']))
+            conn.commit()
+            return jsonify({"success": True})
+        if request.method == 'DELETE':
+            cur.execute("DELETE FROM directory_phones WHERE id = %s", (request.args.get('id'),))
+            conn.commit()
+            return jsonify({"success": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
