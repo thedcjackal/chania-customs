@@ -114,6 +114,13 @@ export const ServicesApp = ({ user, onExit }) => {
     const printRef1 = useRef(); 
     const printRef2 = useRef();
 
+    // Define this BEFORE useEffect so it can be included in deps if needed, 
+    // or keep it outside and disable eslint rule.
+    const loadMyUnavailability = async () => {
+        const res = await axios.get(`${API_URL}/services/unavailability?employee_id=${user.id}`);
+        setMyUnavail(res.data);
+    };
+
     useEffect(() => {
         const fetchAll = async () => {
             try {
@@ -134,6 +141,7 @@ export const ServicesApp = ({ user, onExit }) => {
             } catch (err) { console.error(err); }
         };
         fetchAll();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [user.id, isAdmin]);
 
     useEffect(() => {
@@ -209,13 +217,8 @@ export const ServicesApp = ({ user, onExit }) => {
         } catch(e) { alert("Σφάλμα αποθήκευσης."); }
     };
 
-    const loadConfig = () => axios.get(`${API_URL}/admin/services/config`).then(res => setConfig(res.data));
+    // Removed unused loadConfig function
     
-    const loadMyUnavailability = async () => {
-        const res = await axios.get(`${API_URL}/services/unavailability?employee_id=${user.id}`);
-        setMyUnavail(res.data);
-    };
-
     const toggleUnavailability = async (dateStr) => {
         if (!isAdmin) {
             const today = new Date();
@@ -398,23 +401,7 @@ export const ServicesApp = ({ user, onExit }) => {
         setDutyForm({...dutyForm, sunday_active_range: { ...(dutyForm.sunday_active_range || {}), [field]: val }});
     };
     
-    // Toggle special dates from Calendar view
-    const toggleSpecial = async (dStr) => { 
-        const currentSpecials = config.special_dates || [];
-        const exists = currentSpecials.some(d => (typeof d === 'string' ? d === dStr : d.date === dStr));
-        
-        try {
-            if (exists) {
-                await axios.delete(`${API_URL}/admin/special_dates?date=${dStr}`);
-            } else {
-                await axios.post(`${API_URL}/admin/special_dates`, { date: dStr, description: 'Αργία' });
-            }
-            const c = await axios.get(`${API_URL}/admin/services/config`); 
-            setConfig(c.data);
-        } catch (e) {
-            alert("Σφάλμα ενημέρωσης ειδικής ημερομηνίας");
-        }
-    };
+    // Removed unused toggleSpecial function
     
     // Add Special Date with Description & Recurring
     const addSpecial = async () => {

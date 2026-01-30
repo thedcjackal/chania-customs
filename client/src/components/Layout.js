@@ -234,21 +234,3 @@ export const Login = ({ onLogin, onBack }) => {
         </div>
     );
 };
-
-export const ServicePortal = ({ onNavigate, user, onLogout }) => {
-    const isAllowed = (appKey) => user.allowed_apps && user.allowed_apps.includes(appKey);
-    return (
-        <div className="portal-container">
-            <header className="portal-header">
-                <h3>Ηλεκτρονικές Υπηρεσίες</h3>
-                <div style={{display:'flex', gap:10, alignItems:'center'}}>
-                    <span>{user.name} {user.surname}</span>
-                    <button className="secondary small-btn" onClick={onLogout}>Έξοδος</button>
-                </div>
-            </header>
-            <div className="app-grid">
-                {/* Apps Grid */}
-            </div>
-        </div>
-    );
-};
