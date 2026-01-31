@@ -20,4 +20,5 @@ ENV FLASK_APP=app.py
 ENV FLASK_ENV=production
 
 # Run app.py when the container launches
-CMD ["python", "app.py"]
+# Change the last line to this:
+CMD ["sh", "-c", "ls -la /app && python app.py"]
