@@ -10,6 +10,7 @@ COPY . /app
 # Install any needed packages specified in requirements.txt
 # We remove the client folder to save space/time, as that's on Vercel now
 RUN rm -rf client
+# Force rebuild 1
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Make port 5000 available to the world outside this container
