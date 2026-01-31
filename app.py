@@ -513,18 +513,24 @@ def check_ssl():
     
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        # Ask Postgres if the current connection uses SSL
-        cur.execute("SELECT ssl_is_used()")
+        # Get the Process ID (PID) of the current connection
+        cur.execute("SELECT pg_backend_pid()")
+        pid = cur.fetchone()['pg_backend_pid']
+
+        # Check the SSL status for this specific PID
+        cur.execute("SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = %s", (pid,))
         ssl_status = cur.fetchone()
-        
-        # Get extra info about the cipher (strength of encryption)
-        cur.execute("SELECT ssl_cipher()")
-        cipher_info = cur.fetchone()
-        
+
+        # If ssl_status is None, it means the view is restricted, 
+        # but if we connected via sslmode=require, we are safe.
+        if not ssl_status:
+            return jsonify({"message": "Could not read stats, but connection is active."})
+
         return jsonify({
-            "ssl_active": ssl_status['ssl_is_used'],
-            "cipher": cipher_info['ssl_cipher'],
-            "message": "Secure" if ssl_status['ssl_is_used'] else "NOT SECURE"
+            "ssl_active": ssl_status.get('ssl'),
+            "version": ssl_status.get('version'),
+            "cipher": ssl_status.get('cipher'),
+            "message": "Secure" if ssl_status.get('ssl') else "NOT SECURE"
         })
     except Exception as e:
         return jsonify({"error": str(e)})
