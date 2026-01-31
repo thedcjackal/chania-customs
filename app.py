@@ -505,7 +505,32 @@ def run_auto_scheduler_logic(db, start_date, end_date):
 # ==========================================
 # 4. API ROUTES
 # ==========================================
-
+@app.route('/debug/ssl', methods=['GET'])
+def check_ssl():
+    conn = get_db()
+    if not conn:
+        return jsonify({"error": "No DB connection"}), 500
+    
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Ask Postgres if the current connection uses SSL
+        cur.execute("SELECT ssl_is_used()")
+        ssl_status = cur.fetchone()
+        
+        # Get extra info about the cipher (strength of encryption)
+        cur.execute("SELECT ssl_cipher()")
+        cipher_info = cur.fetchone()
+        
+        return jsonify({
+            "ssl_active": ssl_status['ssl_is_used'],
+            "cipher": cipher_info['ssl_cipher'],
+            "message": "Secure" if ssl_status['ssl_is_used'] else "NOT SECURE"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+    finally:
+        conn.close()
+        
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
