@@ -1,5 +1,7 @@
-flask
-flask-cors
-python-dateutil
-psycopg2-binary
+Flask
+Flask-SQLAlchemy
+Flask-Cors
 gunicorn
+psycopg2-binary
+requests
+python-dotenv
