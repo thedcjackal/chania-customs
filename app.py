@@ -498,7 +498,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
 # 4. API ROUTES
 # ==========================================
 
-@app.route('/api/login', methods=['POST'])
+@app.route('/login', methods=['POST'])
 def login():
     data = request.json
     conn = get_db()
@@ -512,7 +512,7 @@ def login():
     finally:
         conn.close()
 
-@app.route('/api/admin/users', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@app.route('/admin/users', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def manage_users():
     conn = get_db()
     if not conn: return jsonify({"error": "DB Error"}), 500
@@ -546,7 +546,7 @@ def manage_users():
     finally:
         conn.close()
 
-@app.route('/api/admin/employees', methods=['GET', 'PUT'])
+@app.route('/admin/employees', methods=['GET', 'PUT'])
 def manage_employees():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -568,7 +568,7 @@ def manage_employees():
     finally:
         conn.close()
 
-@app.route('/api/announcements', methods=['GET', 'POST', 'DELETE', 'PUT'])
+@app.route('/announcements', methods=['GET', 'POST', 'DELETE', 'PUT'])
 def announcements():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -605,7 +605,7 @@ def announcements():
     finally:
         conn.close()
 
-@app.route('/api/reservations', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@app.route('/reservations', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def reservations():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -653,7 +653,7 @@ def reservations():
     finally:
         conn.close()
 
-@app.route('/api/daily_status', methods=['GET','POST'])
+@app.route('/daily_status', methods=['GET','POST'])
 def daily_status():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -674,7 +674,7 @@ def daily_status():
 
 # --- ADMIN SETTINGS ROUTES ---
 
-@app.route('/api/admin/settings', methods=['GET', 'POST'])
+@app.route('/admin/settings', methods=['GET', 'POST'])
 def settings():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -704,7 +704,7 @@ def settings():
     finally:
         conn.close()
 
-@app.route('/api/admin/schedule_metadata', methods=['GET', 'POST'])
+@app.route('/admin/schedule_metadata', methods=['GET', 'POST'])
 def schedule_metadata():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -730,7 +730,7 @@ def schedule_metadata():
     finally:
         conn.close()
 
-@app.route('/api/admin/reference', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@app.route('/admin/reference', methods=['GET', 'POST', 'PUT', 'DELETE'])
 def reference():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -760,7 +760,7 @@ def reference():
     finally:
         conn.close()
 
-@app.route('/api/admin/services/config', methods=['GET', 'POST'])
+@app.route('/admin/services/config', methods=['GET', 'POST'])
 def config_route():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -808,7 +808,7 @@ def config_route():
     finally:
         conn.close()
 
-@app.route('/api/services/schedule', methods=['GET', 'POST'])
+@app.route('/services/schedule', methods=['GET', 'POST'])
 def schedule_route():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -833,7 +833,7 @@ def schedule_route():
     finally:
         conn.close()
 
-@app.route('/api/services/run_scheduler', methods=['POST'])
+@app.route('/services/run_scheduler', methods=['POST'])
 def run_scheduler_route():
     try:
         req = request.json
@@ -888,14 +888,14 @@ def run_scheduler_route():
 
     return jsonify({"success": True, "logs": res_meta['logs']})
 
-@app.route('/api/services/balance', methods=['GET'])
+@app.route('/services/balance', methods=['GET'])
 def get_balance():
     # Pass params: start & end
     start_str = request.args.get('start')
     end_str = request.args.get('end')
     return jsonify(calculate_db_balance(start_str, end_str))
 
-@app.route('/api/services/unavailability', methods=['GET', 'POST', 'DELETE'])
+@app.route('/services/unavailability', methods=['GET', 'POST', 'DELETE'])
 def s_unavail():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -919,7 +919,7 @@ def s_unavail():
     finally:
         conn.close()
 
-@app.route('/api/services/preferences', methods=['GET', 'POST'])
+@app.route('/services/preferences', methods=['GET', 'POST'])
 def s_prefs():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -948,7 +948,7 @@ def s_prefs():
     finally:
         conn.close()
 
-@app.route('/api/services/clear_schedule', methods=['POST'])
+@app.route('/services/clear_schedule', methods=['POST'])
 def clear_schedule():
     conn = get_db()
     cur = conn.cursor()
@@ -962,7 +962,7 @@ def clear_schedule():
     finally:
         conn.close()
 
-@app.route('/api/admin/special_dates', methods=['GET', 'POST', 'DELETE'])
+@app.route('/admin/special_dates', methods=['GET', 'POST', 'DELETE'])
 def special_dates_route():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -991,7 +991,7 @@ def special_dates_route():
         conn.close()
 
 # --- DIRECTORY APP ROUTES ---
-@app.route('/api/directory', methods=['GET'])
+@app.route('/directory', methods=['GET'])
 def get_directory():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1023,7 +1023,7 @@ def get_directory():
     finally:
         conn.close()
 
-@app.route('/api/directory/departments', methods=['POST', 'PUT', 'DELETE'])
+@app.route('/directory/departments', methods=['POST', 'PUT', 'DELETE'])
 def manage_departments():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1061,7 +1061,7 @@ def manage_departments():
     finally:
         conn.close()
 
-@app.route('/api/directory/phones', methods=['POST', 'PUT', 'DELETE'])
+@app.route('/directory/phones', methods=['POST', 'PUT', 'DELETE'])
 def manage_phones():
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
