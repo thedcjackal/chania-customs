@@ -27,11 +27,19 @@ CORS(app, resources={r"/*": {"origins": ["https://customs-client.vercel.app", "h
 # ==========================================
 def get_db():
     url = os.environ.get('DATABASE_URL')
-    if not url: return None
+    if not url:
+        print("❌ ERROR: DATABASE_URL environment variable is MISSING.")
+        return None
+    
+    # Fix for Fly.io/Supabase providing 'postgres://' which some drivers dislike
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+        
     try:
-        return psycopg2.connect(url)
+        conn = psycopg2.connect(url)
+        return conn
     except Exception as e:
-        print(f"DB Connection Failed: {e}")
+        print(f"❌ DB Connection Failed: {e}")
         return None
 
 # ==========================================
