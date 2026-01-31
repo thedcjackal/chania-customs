@@ -511,26 +511,17 @@ def check_ssl():
     if not conn:
         return jsonify({"error": "No DB connection"}), 500
     
-    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        # Get the Process ID (PID) of the current connection
-        cur.execute("SELECT pg_backend_pid()")
-        pid = cur.fetchone()['pg_backend_pid']
-
-        # Check the SSL status for this specific PID
-        cur.execute("SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = %s", (pid,))
-        ssl_status = cur.fetchone()
-
-        # If ssl_status is None, it means the view is restricted, 
-        # but if we connected via sslmode=require, we are safe.
-        if not ssl_status:
-            return jsonify({"message": "Could not read stats, but connection is active."})
-
+        # Check Client-Side SSL (The truth for Fly -> Supabase)
+        is_ssl = conn.info.ssl_in_use
+        
+        # Get protocol version if available
+        ssl_attr = conn.info.ssl_attribute('protocol')
+        
         return jsonify({
-            "ssl_active": ssl_status.get('ssl'),
-            "version": ssl_status.get('version'),
-            "cipher": ssl_status.get('cipher'),
-            "message": "Secure" if ssl_status.get('ssl') else "NOT SECURE"
+            "client_ssl_active": is_ssl,
+            "protocol": ssl_attr,
+            "message": "SECURE (Client-side Verified)" if is_ssl else "NOT SECURE"
         })
     except Exception as e:
         return jsonify({"error": str(e)})
