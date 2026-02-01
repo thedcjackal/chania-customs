@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import api from './api/axios'; // Secure Axios Client
+import api from './api/axios';
+import { API_URL } from './config';
 import { supabase } from './supabase'; 
 import { Phone, Mail, ChevronDown, ChevronRight } from 'lucide-react';
 
@@ -112,9 +113,8 @@ function App() {
     // --- FETCH BACKEND PROFILE ---
     const fetchUserProfile = async (currentSession) => {
         try {
-            const token = currentSession.access_token;
-            // FIX: Removed ${API_URL}. The 'api' client already handles the base URL.
-            // Also removed manual Authorization header because 'api' interceptor handles it.
+            // FIX: Removed unused 'token' variable. 
+            // The secure 'api' client handles the token injection automatically.
             const res = await api.get('/api/auth/exchange'); 
             setUserProfile(res.data);
         } catch (error) {
@@ -132,7 +132,6 @@ function App() {
     const openDirectory = async () => {
         setShowDirectory(true);
         try {
-            // FIX: Removed ${API_URL}
             const res = await api.get('/api/directory');
             setDirectoryData(res.data);
             setExpandedIds([]); 
