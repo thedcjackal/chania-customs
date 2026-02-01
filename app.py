@@ -7,8 +7,12 @@ import datetime
 import random
 import psycopg2
 import traceback
+import re
 from flask import Flask, request, jsonify, g, make_response
+# 1. IMPORT FLASK-CORS
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from datetime import datetime as dt, timedelta
 from psycopg2.extras import RealDictCursor, Json
 from supabase import create_client, Client
@@ -22,12 +26,40 @@ except ImportError:
 
 app = Flask(__name__)
 
-# --- CORS CONFIGURATION ---
-# We allow requests from Localhost (Dev) and Vercel (Prod)
-CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://customs-client.vercel.app"]}})
+# ==========================================
+# 0. SECURITY & CONFIGURATION
+# ==========================================
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",                  
+    "https://customs-client.vercel.app"       
+]
+
+# --- STEP 1: CONFIGURE CORS (MUST BE FIRST) ---
+# We use the library because it handles the complex Preflight logic reliably.
+# 'supports_credentials=True' is CRITICAL for cookies.
+CORS(app, 
+     resources={r"/*": {"origins": ALLOWED_ORIGINS}}, 
+     supports_credentials=True,
+     allow_headers=["Authorization", "Content-Type"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
+
+# --- STEP 2: CONFIGURE LIMITER ---
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://" 
+)
+
+# --- STEP 3: EXEMPT PREFLIGHT FROM LIMITER ---
+# This ensures Limiter doesn't block the browser's security check.
+@limiter.request_filter
+def ignore_options():
+    return request.method == 'OPTIONS'
 
 # ==========================================
-# 0. SUPABASE AUTH SETUP
+# 1. SUPABASE SETUP
 # ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -42,7 +74,7 @@ else:
     print("⚠️ WARNING: SUPABASE_URL or SUPABASE_KEY missing in .env")
 
 # ==========================================
-# 1. DATABASE CONNECTION
+# 2. DATABASE CONNECTION
 # ==========================================
 def get_db():
     url = os.environ.get('DATABASE_URL')
@@ -64,45 +96,68 @@ def get_db():
         return None
 
 # ==========================================
-# 2. AUTHENTICATION MIDDLEWARE (THE GUARD)
+# 3. AUTHENTICATION MIDDLEWARE
 # ==========================================
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # --- CORS PREFLIGHT FIX ---
-        # If the browser is asking "Is this safe?", we explicitly say YES.
-        if request.method == 'OPTIONS':
-            response = make_response()
-            response.headers.add("Access-Control-Allow-Origin", "http://localhost:3000") # Adjust for Prod dynamically if needed
-            response.headers.add('Access-Control-Allow-Headers', "*")
-            response.headers.add('Access-Control-Allow-Methods', "*")
-            return response
+        # NOTE: CORS is now handled entirely by Flask-CORS. 
+        # We focus purely on token verification here.
 
-        token = request.headers.get('Authorization')
+        token = None
         
+        # 1. PRIORITY: Check HttpOnly Cookie
+        if 'access_token' in request.cookies:
+            token = request.cookies.get('access_token')
+        
+        # 2. FALLBACK: Check Authorization Header
         if not token:
-            return jsonify({"error": "Missing Authorization Token"}), 401
-        
-        if "Bearer" in token:
-            token = token.split(" ")[1]
+            auth_header = request.headers.get('Authorization')
+            if auth_header and "Bearer" in auth_header:
+                token = auth_header.split(" ")[1]
+
+        if not token:
+            return jsonify({"error": "Missing Session (Cookie or Header)"}), 401
 
         if not supabase:
-             # This prevents the 500 error that looks like a CORS error
-             return jsonify({"error": "Server Auth Misconfigured (Check .env)"}), 500
+             return jsonify({"error": "Server Config Error"}), 500
 
         try:
+            # 3. Verify Token
             user_response = supabase.auth.get_user(token)
             g.auth_id = user_response.user.id
         except Exception as e:
-            print(f"Auth Error: {e}")
-            return jsonify({"error": "Invalid or Expired Token"}), 401
+            # If cookie is invalid, attempt to clear it
+            resp = make_response(jsonify({"error": "Session Expired"}))
+            resp.set_cookie('access_token', '', expires=0, samesite='None', secure=True)
+            return resp, 401
 
         return f(*args, **kwargs)
     return decorated
 
 # ==========================================
-# 3. SHARED HELPER FUNCTIONS
+# 4. SHARED HELPER FUNCTIONS
 # ==========================================
+def validate_input(data, required_fields):
+    if not data: return False, "No data provided"
+
+    for field, rules in required_fields.items():
+        value = data.get(field)
+        if not rules.get('optional', False):
+            if value is None or value == "":
+                return False, f"Field '{field}' is required"
+        if rules.get('optional', False) and (value is None or value == ""):
+            continue
+        expected_type = rules.get('type')
+        if expected_type:
+            if not isinstance(value, expected_type):
+                return False, f"Field '{field}' must be {expected_type.__name__}"
+        if 'max_length' in rules and isinstance(value, str) and len(value) > rules['max_length']:
+            return False, f"Field '{field}' is too long (max {rules['max_length']})"
+        if 'regex' in rules and isinstance(value, str) and not re.match(rules['regex'], value):
+            return False, f"Field '{field}' has invalid format"
+
+    return True, None
 
 def is_in_period(date_obj, range_config, logs=None):
     if not range_config or not range_config.get('start') or not range_config.get('end'): return True 
@@ -131,26 +186,22 @@ def is_scoreable_day(d_date, special_dates_set):
     return False
 
 # ==========================================
-# 4. BUSINESS LOGIC
+# 5. BUSINESS LOGIC
 # ==========================================
-
 def calculate_db_balance(start_str=None, end_str=None):
     conn = get_db()
     if not conn: return []
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    
     cur.execute("SELECT * FROM duties")
     duties = cur.fetchall()
     employees = get_staff_users(cur)
     cur.execute("SELECT * FROM schedule")
     schedule = cur.fetchall()
-    
     special_dates_set = set()
     try:
         cur.execute("SELECT date FROM special_dates")
         for r in cur.fetchall(): special_dates_set.add(str(r['date']))
     except: pass
-    
     conn.close()
 
     if start_str and end_str:
@@ -211,7 +262,6 @@ def calculate_db_balance(start_str=None, end_str=None):
 
     for eid, stat in stats.items():
         if '_weekly_tracker' in stat: del stat['_weekly_tracker']
-                    
     return list(stats.values())
 
 def load_state_for_scheduler(start_date=None):
@@ -229,13 +279,11 @@ def load_state_for_scheduler(start_date=None):
     for u in unavail: u['date'] = str(u['date'])
     cur.execute("SELECT * FROM scheduler_state WHERE id = 1")
     state = cur.fetchone()
-    
     special_dates = []
     try:
         cur.execute("SELECT date FROM special_dates")
         special_dates = [str(r['date']) for r in cur.fetchall()]
     except: pass
-    
     preferences = {}
     try:
         if start_date:
@@ -246,11 +294,9 @@ def load_state_for_scheduler(start_date=None):
             rows = cur.fetchall()
             for r in rows: preferences[int(r['user_id'])] = True
     except Exception as e: print(f"Error loading preferences: {e}")
-
     conn.close()
     rot_q = state['rotation_queues'] if state and state['rotation_queues'] else {}
     next_q = state['next_round_queues'] if state and state['next_round_queues'] else {}
-
     return { "employees": employees, "service_config": { "duties": duties, "special_dates": special_dates, "rotation_queues": rot_q, "next_round_queues": next_q }, "schedule": schedule, "unavailability": unavail, "preferences": preferences }
 
 def run_auto_scheduler_logic(db, start_date, end_date):
@@ -318,7 +364,6 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             if not is_in_period(curr, duty.get('active_range')) or not is_in_period(curr, conf.get('active_range')): continue
             if any(s['date']==d_str and int(s['duty_id'])==int(duty['id']) and int(s['shift_index'])==sh_idx for s in schedule): continue
             if duty.get('is_weekly') and curr.weekday()==6 and not is_in_period(curr, duty.get('sunday_active_range')): continue
-            
             chosen_id = None
             default_id = conf.get('default_employee_id'); needs_cover = is_scoreable_day(curr, special_dates_set) or not default_id or default_id in [int(x) for x in conf.get('excluded_ids',[])] or (default_id, d_str) in unavail_map or is_user_busy(default_id, curr, schedule, True)
             if not needs_cover: chosen_id = default_id
@@ -370,14 +415,17 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 rotate_assigned_user(f"normal_{x['d']['id']}_sh_{x['i']}", chosen)
                 schedule.append({"date": d_str, "duty_id": x['d']['id'], "shift_index": x['i'], "employee_id": chosen, "manually_locked": False})
         curr += timedelta(days=1)
-
     return schedule, {"rotation_queues": rot_q, "next_round_queues": nxt_q, "logs": logs}
 
 # ==========================================
-# 5. API ROUTES (ALL PREFIXED WITH /api)
+# 6. API ROUTES (ALL PREFIXED WITH /api)
 # ==========================================
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return jsonify(error="ratelimit_exceeded", message="Too many requests. Please try again later."), 429
 
 @app.route('/')
+@limiter.limit("10 per minute")
 def home():
     return "Customs API is Secure & Running!"
 
@@ -396,8 +444,37 @@ def check_ssl():
     finally:
         conn.close()
 
+# --- AUTH SESSION MANAGEMENT (COOKIES) ---
+@app.route('/api/auth/session', methods=['POST'])
+@limiter.limit("10 per minute")
+def set_session():
+    token = request.json.get('access_token')
+    if not token:
+        return jsonify({"error": "Token required"}), 400
+    try:
+        user = supabase.auth.get_user(token)
+        resp = make_response(jsonify({"success": True, "status": "Session Secured"}))
+        resp.set_cookie(
+            'access_token', 
+            token, 
+            httponly=True, 
+            secure=True, 
+            samesite='None',
+            max_age=60*60*24*7 
+        )
+        return resp
+    except Exception as e:
+        return jsonify({"error": "Invalid Token"}), 401
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout_session():
+    resp = make_response(jsonify({"success": True}))
+    resp.set_cookie('access_token', '', expires=0, secure=True, httponly=True, samesite='None')
+    return resp
+
 # --- LOGIN HANDSHAKE ---
 @app.route('/api/auth/exchange', methods=['GET'])
+@limiter.limit("5 per minute")
 @require_auth
 def auth_exchange():
     conn = get_db()
@@ -407,15 +484,16 @@ def auth_exchange():
         cur.execute("SELECT * FROM users WHERE auth_id = %s", (g.auth_id,))
         user = cur.fetchone()
         if user:
-            user.pop('password', None) # Security measure
+            user.pop('password', None)
             return jsonify(user)
         else:
             return jsonify({"error": "User profile not linked. Please contact admin."}), 404
     finally:
         conn.close()
 
-# --- ANNOUNCEMENTS (Mixed Access) ---
+# --- ANNOUNCEMENTS ---
 @app.route('/api/announcements', methods=['GET', 'POST', 'DELETE', 'PUT'])
+@limiter.limit("10 per minute")
 def announcements():
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
@@ -428,16 +506,19 @@ def announcements():
         except: pass
         conn.commit()
 
-        # Public Read
         if request.method == 'GET':
             cur.execute("SELECT * FROM announcements ORDER BY date DESC")
             res = cur.fetchall()
             for r in res: r['date'] = str(r['date'])
             return jsonify(res)
 
-        # Write needs Auth
         token = request.headers.get('Authorization')
-        if not token: return jsonify({"error": "Unauthorized"}), 401
+        if not token: 
+            if 'access_token' in request.cookies:
+                token = request.cookies.get('access_token')
+            else:
+                return jsonify({"error": "Unauthorized"}), 401
+        
         try:
              clean_token = token.split(" ")[1] if "Bearer" in token else token
              supabase.auth.get_user(clean_token)
@@ -445,15 +526,27 @@ def announcements():
 
         if request.method == 'POST':
             data = request.json
+            is_valid, error = validate_input(data, {
+                'text': {'type': str, 'max_length': 200},
+                'body': {'type': str, 'max_length': 5000, 'optional': True},
+                'is_important': {'type': bool, 'optional': True}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("INSERT INTO announcements (text, body, is_important, date) VALUES (%s, %s, %s, CURRENT_DATE)", 
-                       (data.get('text'), data.get('body', ''), data.get('is_important', False)))
+                        (data.get('text'), data.get('body', ''), data.get('is_important', False)))
             conn.commit()
             return jsonify({"success":True})
         
         if request.method == 'PUT':
             data = request.json
+            is_valid, error = validate_input(data, {
+                'id': {'type': int},
+                'text': {'type': str, 'max_length': 200},
+                'body': {'type': str, 'max_length': 5000, 'optional': True}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("UPDATE announcements SET text=%s, body=%s, is_important=%s WHERE id=%s", 
-                       (data.get('text'), data.get('body', ''), data.get('is_important', False), data.get('id')))
+                        (data.get('text'), data.get('body', ''), data.get('is_important', False), data.get('id')))
             conn.commit()
             return jsonify({"success": True})
         
@@ -464,9 +557,9 @@ def announcements():
     finally:
         conn.close()
 
-# --- PROTECTED ADMIN/SERVICE ROUTES ---
-
+# --- ADMIN ROUTES ---
 @app.route('/api/admin/users', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@limiter.limit("5 per minute")
 @require_auth
 def manage_users():
     conn = get_db()
@@ -480,6 +573,13 @@ def manage_users():
             return jsonify(users)
         if request.method == 'POST':
             u = request.json
+            is_valid, error = validate_input(u, {
+                'username': {'type': str, 'max_length': 50},
+                'role': {'type': str, 'optional': True},
+                'name': {'type': str, 'max_length': 100},
+                'surname': {'type': str, 'max_length': 100}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 INSERT INTO users (username, password, role, name, surname, company, vessels, allowed_apps)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
@@ -488,6 +588,13 @@ def manage_users():
             return jsonify({"success":True})
         if request.method == 'PUT':
             u = request.json
+            is_valid, error = validate_input(u, {
+                'id': {'type': int},
+                'username': {'type': str, 'max_length': 50},
+                'name': {'type': str, 'max_length': 100},
+                'surname': {'type': str, 'max_length': 100}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 UPDATE users SET username=%s, role=%s, name=%s, surname=%s, company=%s, vessels=%s, allowed_apps=%s
                 WHERE id=%s
@@ -512,10 +619,11 @@ def manage_employees():
     try:
         if request.method == 'GET':
             return jsonify(get_staff_users(cur))
-        
         if request.method == 'PUT':
             data = request.json
             if 'reorder' in data:
+                if not isinstance(data['reorder'], list):
+                    return jsonify({"error": "reorder must be a list"}), 400
                 for index, user_id in enumerate(data['reorder']):
                     cur.execute("UPDATE users SET seniority = %s WHERE id = %s", (index + 1, user_id))
                 conn.commit()
@@ -541,6 +649,13 @@ def schedule_route():
             return jsonify(rows)
         if request.method == 'POST':
             c = request.json
+            is_valid, error = validate_input(c, {
+                'date': {'type': str, 'regex': r'^\d{4}-\d{2}-\d{2}$'},
+                'duty_id': {'type': int},
+                'shift_index': {'type': int},
+                'employee_id': {'type': int}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 INSERT INTO schedule (date, duty_id, shift_index, employee_id, manually_locked)
                 VALUES (%s, %s, %s, %s, true)
@@ -559,33 +674,33 @@ def schedule_route():
 def run_scheduler_route():
     try:
         req = request.json
+        is_valid, error = validate_input(req, {
+            'start': {'type': str, 'regex': r'^\d{4}-\d{2}$'},
+            'end': {'type': str, 'regex': r'^\d{4}-\d{2}$'}
+        })
+        if not is_valid: return jsonify({"error": error}), 400
         try:
             start_date = dt.strptime(req['start'] + '-01', '%Y-%m-%d').date()
         except:
              return jsonify({"error": "Date Parsing Error"}), 400
-
         db = load_state_for_scheduler(start_date)
         if not db: return jsonify({"error": "DB Load Failed"}), 500
-
         end_date_month = dt.strptime(req['end'] + '-01', '%Y-%m-%d')
         end_date = (end_date_month + relativedelta(months=1) - timedelta(days=1)).date()
     except Exception as e:
         print(traceback.format_exc())
         return jsonify({"error": "Date Parsing Error", "details": str(e)}), 400
-    
     try:
         new_schedule, res_meta = run_auto_scheduler_logic(db, start_date, end_date)
     except Exception as e:
         print("CRASH IN SCHEDULER LOGIC:")
         print(traceback.format_exc())
         return jsonify({"error": "Scheduler Algorithm Crash", "details": str(e)}), 500
-    
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor()
     try:
         cur.execute("DELETE FROM schedule WHERE date >= %s AND date <= %s AND manually_locked = false", (start_date, end_date))
-        
         values = []
         for s in new_schedule:
             try:
@@ -593,13 +708,10 @@ def run_scheduler_route():
                 if start_date <= s_date <= end_date and not s.get('manually_locked'):
                     values.append((s['date'], s['duty_id'], s['shift_index'], s['employee_id'], False, False))
             except: pass
-        
         if values:
             args_str = ','.join(cur.mogrify("(%s,%s,%s,%s,%s,%s)", x).decode('utf-8') for x in values)
             cur.execute("INSERT INTO schedule (date, duty_id, shift_index, employee_id, is_locked, manually_locked) VALUES " + args_str + " ON CONFLICT (date, duty_id, shift_index) DO NOTHING")
-
         cur.execute("UPDATE scheduler_state SET rotation_queues = %s, next_round_queues = %s WHERE id = 1", (Json(res_meta['rotation_queues']), Json(res_meta['next_round_queues'])))
-        
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -607,7 +719,6 @@ def run_scheduler_route():
         return jsonify({"error": "DB Save Error", "details": str(e)}), 500
     finally:
         conn.close()
-
     return jsonify({"success": True, "logs": res_meta['logs']})
 
 @app.route('/api/services/balance', methods=['GET'])
@@ -633,6 +744,11 @@ def s_unavail():
             return jsonify(res)
         if request.method=='POST':
             u=request.json
+            is_valid, error = validate_input(u, {
+                'employee_id': {'type': int},
+                'date': {'type': str, 'regex': r'^\d{4}-\d{2}-\d{2}$'}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("INSERT INTO unavailability (employee_id, date) VALUES (%s, %s) ON CONFLICT DO NOTHING", (u.get('employee_id'), u.get('date')))
             conn.commit()
             return jsonify({"success":True})
@@ -652,16 +768,20 @@ def s_prefs():
     try:
         cur.execute("CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER, month_str TEXT, prefer_double_sk BOOLEAN, PRIMARY KEY (user_id, month_str))")
         conn.commit()
-
         if request.method == 'GET':
             uid = request.args.get('user_id')
             m_str = request.args.get('month')
             cur.execute("SELECT prefer_double_sk FROM user_preferences WHERE user_id = %s AND month_str = %s", (uid, m_str))
             res = cur.fetchone()
             return jsonify({"prefer_double_sk": res['prefer_double_sk'] if res else False})
-
         if request.method == 'POST':
             d = request.json
+            is_valid, error = validate_input(d, {
+                'user_id': {'type': int},
+                'month': {'type': str, 'regex': r'^\d{4}-\d{2}$'},
+                'value': {'type': bool}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 INSERT INTO user_preferences (user_id, month_str, prefer_double_sk) 
                 VALUES (%s, %s, %s)
@@ -681,6 +801,11 @@ def clear_schedule():
     cur = conn.cursor()
     req = request.json
     try:
+        is_valid, error = validate_input(req, {
+            'start_date': {'type': str},
+            'end_date': {'type': str}
+        })
+        if not is_valid: return jsonify({"error": error}), 400
         start_date = dt.strptime(req['start_date'], '%Y-%m-%d').date() if len(req['start_date']) > 7 else dt.strptime(req['start_date'], '%Y-%m').date()
         end_date = dt.strptime(req['end_date'], '%Y-%m-%d').date() if len(req['end_date']) > 7 else (dt.strptime(req['end_date'], '%Y-%m') + relativedelta(months=1) - timedelta(days=1)).date()
         cur.execute("DELETE FROM schedule WHERE date >= %s AND date <= %s", (start_date, end_date))
@@ -711,6 +836,16 @@ def reservations():
             return jsonify(rows)
         if request.method == 'POST':
             r = request.json
+            is_valid, error = validate_input(r, {
+                'date': {'type': str, 'regex': r'^\d{4}-\d{2}-\d{2}$'},
+                'vessel': {'type': str},
+                'quantity': {'type': (int, float)},
+                'fuel_type': {'type': str},
+                'user_company': {'type': str},
+                'supply_company': {'type': str},
+                'assigned_employee': {'type': int, 'optional': True}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 INSERT INTO reservations (date, vessel, user_company, supply_company, fuel_type, quantity, payment_method, mrn, status, flags, location_x, location_y, assigned_employee)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
@@ -719,13 +854,20 @@ def reservations():
             return jsonify({"success":True})
         if request.method == 'PUT':
             rid = request.json.get('id')
+            if not rid: return jsonify({"error": "ID required"}), 400
             updates = request.json.get('updates', {})
+            ALLOWED_COLS = {
+                'vessel', 'user_company', 'supply_company', 'fuel_type', 
+                'quantity', 'payment_method', 'mrn', 'status', 'assigned_employee',
+                'flags', 'location' 
+            }
             fields = []; vals = []
             for k, v in updates.items():
+                if k not in ALLOWED_COLS: continue  
                 if k == 'location':
-                    fields.append("location_x=%s"); vals.append(v.get('x'))
-                    fields.append("location_y=%s"); vals.append(v.get('y'))
-                elif k != 'id':
+                    fields.append("location_x=%s"); vals.append(v.get('x', 0))
+                    fields.append("location_y=%s"); vals.append(v.get('y', 0))
+                else:
                     fields.append(f"{k}=%s"); vals.append(v)
             if fields:
                 vals.append(rid)
@@ -751,6 +893,11 @@ def daily_status():
             res = cur.fetchone()
             return jsonify(res if res else {"finalized": False})
         if request.method == 'POST':
+            is_valid, error = validate_input(request.json, {
+                'date': {'type': str, 'regex': r'^\d{4}-\d{2}-\d{2}$'},
+                'finalized': {'type': bool}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 INSERT INTO daily_status (date, finalized) VALUES (%s, %s)
                 ON CONFLICT (date) DO UPDATE SET finalized = EXCLUDED.finalized
@@ -770,14 +917,12 @@ def settings():
         cur.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS signee_name TEXT")
         cur.execute("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS declaration_deadline INTEGER")
         conn.commit()
-
         if request.method == 'GET':
             cur.execute("SELECT * FROM app_settings WHERE id = 1")
             row = cur.fetchone()
             if row and row.get('lock_time'):
                 row['lock_time'] = str(row['lock_time'])
             return jsonify(row)
-            
         if request.method == 'POST':
             s = request.json
             cur.execute("""
@@ -799,14 +944,18 @@ def schedule_metadata():
     try:
         cur.execute("CREATE TABLE IF NOT EXISTS schedule_metadata (month_str TEXT PRIMARY KEY, protocol_num TEXT, protocol_date TEXT)")
         conn.commit()
-
         if request.method == 'GET':
             m = request.args.get('month')
             cur.execute("SELECT * FROM schedule_metadata WHERE month_str = %s", (m,))
             return jsonify(cur.fetchone() or {})
-        
         if request.method == 'POST':
             d = request.json
+            is_valid, error = validate_input(d, {
+                'month': {'type': str, 'regex': r'^\d{4}-\d{2}$'},
+                'protocol_num': {'type': str, 'optional': True},
+                'protocol_date': {'type': str, 'optional': True}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
                 INSERT INTO schedule_metadata (month_str, protocol_num, protocol_date)
                 VALUES (%s, %s, %s)
@@ -832,6 +981,7 @@ def reference():
         if request.method == 'POST':
             typ = request.json.get('type') 
             val = request.json.get('value')
+            if not val: return jsonify({"error": "Value required"}), 400
             if typ == 'companies':
                 cur.execute("UPDATE app_settings SET companies = array_append(companies, %s) WHERE id=1", (val,))
             elif typ == 'fuel_types':
@@ -862,14 +1012,12 @@ def config_route():
             duties = cur.fetchall()
             cur.execute("SELECT * FROM scheduler_state WHERE id=1")
             state = cur.fetchone()
-            
             special_dates = []
             try:
                 cur.execute("SELECT * FROM special_dates ORDER BY date")
                 rows = cur.fetchall()
                 special_dates = [{'date': str(r['date']), 'description': r['description']} for r in rows]
             except: pass
-            
             return jsonify({
                 "duties": duties,
                 "special_dates": special_dates,
@@ -881,7 +1029,7 @@ def config_route():
             for d in new_duties:
                 safe_shifts = d.get('shifts_per_day')
                 if safe_shifts is None: safe_shifts = 1
-                
+                if not d.get('name'): return jsonify({"error": "Duty Name required"}), 400
                 if 'id' in d and d['id']:
                     cur.execute("""
                         UPDATE duties SET 
@@ -908,7 +1056,6 @@ def special_dates_route():
     try:
         cur.execute("CREATE TABLE IF NOT EXISTS special_dates (date DATE PRIMARY KEY, description TEXT)")
         conn.commit()
-
         if request.method == 'GET':
             cur.execute("SELECT * FROM special_dates ORDER BY date")
             rows = cur.fetchall()
@@ -917,6 +1064,8 @@ def special_dates_route():
         if request.method == 'POST':
             d = request.json.get('date')
             desc = request.json.get('description', '')
+            if not d or not re.match(r'^\d{4}-\d{2}-\d{2}$', str(d)):
+                 return jsonify({"error": "Invalid Date"}), 400
             cur.execute("INSERT INTO special_dates (date, description) VALUES (%s, %s) ON CONFLICT (date) DO UPDATE SET description = EXCLUDED.description", (d, desc))
             conn.commit()
             return jsonify({"success": True})
@@ -941,18 +1090,14 @@ def get_directory():
             cur.execute("ALTER TABLE directory_phones DROP COLUMN IF EXISTS name") 
         except: pass
         conn.commit()
-
         cur.execute("SELECT * FROM directory_departments ORDER BY sequence ASC, id ASC")
         depts = cur.fetchall()
-        
         cur.execute("SELECT * FROM directory_phones ORDER BY is_supervisor DESC, id ASC")
         phones = cur.fetchall()
-        
         result = []
         for d in depts:
             d_phones = [p for p in phones if p['dept_id'] == d['id']]
             result.append({**d, 'phones': d_phones})
-            
         return jsonify(result)
     finally:
         conn.close()
@@ -971,19 +1116,20 @@ def manage_departments():
                     cur.execute("UPDATE directory_departments SET sequence = %s WHERE id = %s", (idx, dept_id))
                 conn.commit()
                 return jsonify({"success": True})
-            
             name = request.json.get('name')
+            if not name: return jsonify({"error": "Name required"}), 400
             cur.execute("SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM directory_departments")
             next_seq = cur.fetchone()['next_seq']
             cur.execute("INSERT INTO directory_departments (name, sequence) VALUES (%s, %s) RETURNING id", (name, next_seq))
             conn.commit()
             return jsonify({"success": True})
-
         if request.method == 'PUT':
-            cur.execute("UPDATE directory_departments SET name = %s WHERE id = %s", (request.json.get('name'), request.json.get('id')))
+            name = request.json.get('name')
+            dept_id = request.json.get('id')
+            if not name or not dept_id: return jsonify({"error": "Name and ID required"}), 400
+            cur.execute("UPDATE directory_departments SET name = %s WHERE id = %s", (name, dept_id))
             conn.commit()
             return jsonify({"success": True})
-
         if request.method == 'DELETE':
             cur.execute("DELETE FROM directory_departments WHERE id = %s", (request.args.get('id'),))
             conn.commit()
@@ -1003,12 +1149,22 @@ def manage_phones():
     try:
         if request.method == 'POST':
             d = request.json
+            is_valid, error = validate_input(d, {
+                'dept_id': {'type': int},
+                'number': {'type': str, 'max_length': 20}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("INSERT INTO directory_phones (dept_id, number, is_supervisor) VALUES (%s, %s, %s)", 
                         (d['dept_id'], d['number'], d.get('is_supervisor', False)))
             conn.commit()
             return jsonify({"success": True})
         if request.method == 'PUT':
             d = request.json
+            is_valid, error = validate_input(d, {
+                'id': {'type': int},
+                'number': {'type': str, 'max_length': 20}
+            })
+            if not is_valid: return jsonify({"error": error}), 400
             cur.execute("UPDATE directory_phones SET number=%s, is_supervisor=%s WHERE id=%s", 
                         (d['number'], d.get('is_supervisor', False), d['id']))
             conn.commit()
@@ -1022,6 +1178,14 @@ def manage_phones():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://customs-api.fly.dev https://*.supabase.co"
+    return response
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

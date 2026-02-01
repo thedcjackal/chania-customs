@@ -147,6 +147,29 @@ export const Login = ({ onBack }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
 
+    // --- HELPER: HANDSHAKE WITH FLASK ---
+    const secureBackendSession = async () => {
+        try {
+            console.log("Syncing session with Backend...");
+            
+            // 1. Get current session token
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No session found");
+
+            // 2. Use 'api' instance instead of raw axios
+            // We still pass 'withCredentials: true' to allow the browser to save the cookie
+            await api.post('/api/auth/session', 
+                { access_token: session.access_token }, 
+                { withCredentials: true }
+            );
+
+            console.log("Backend Session Secured via Cookie.");
+        } catch (err) {
+            console.error("Backend Sync Failed:", err);
+            // Non-blocking error logging
+        }
+    };
+
     const handleSubmit = async (e) => { 
         e.preventDefault(); 
         setLoading(true);
@@ -154,9 +177,8 @@ export const Login = ({ onBack }) => {
         
         try {
             if (!needs2FA) {
-                // PHASE 1: PASSWORD LOGIN (Supabase)
+                // PHASE 1: PASSWORD LOGIN
                 console.log("Attempting Password Login...");
-                // FIX: Removed unused 'data' variable
                 const { error } = await supabase.auth.signInWithPassword({
                     email: email,
                     password: password,
@@ -165,31 +187,41 @@ export const Login = ({ onBack }) => {
                 if (error) throw error;
 
                 // CHECK FOR 2FA
-                console.log("Password Success. Checking 2FA status...");
                 const { data: factors } = await supabase.auth.mfa.listFactors();
                 const totpFactor = factors?.totp?.find(f => f.status === 'verified');
 
                 if (totpFactor) {
-                    console.log("2FA Found:", totpFactor.id);
                     setFactorId(totpFactor.id);
                     setNeeds2FA(true); 
                     setLoading(false); 
                     return; 
                 }
+
+                // SUCCESS -> SECURE SESSION
+                await secureBackendSession();
+
             } else {
                 // PHASE 2: VERIFY 2FA CODE
                 console.log("Verifying 2FA Code...");
-                // FIX: Removed unused 'data' variable
                 const { error } = await supabase.auth.mfa.challengeAndVerify({
                     factorId: factorId,
                     code: token2FA,
                 });
 
                 if (error) throw error;
+
+                // SUCCESS -> SECURE SESSION
+                await secureBackendSession();
             }
+
+            // LOGIN COMPLETE
+            // Depending on your routing, you might need to force a reload or redirect here
+            // window.location.reload(); 
+
         } catch (err) {
             console.error("Login Error:", err);
             setError(err.message === "Invalid login credentials" ? "Λάθος στοιχεία" : "Σφάλμα: " + err.message);
+        } finally {
             setLoading(false);
         }
     };
@@ -198,7 +230,7 @@ export const Login = ({ onBack }) => {
         <div className="login-wrapper">
             <button className="back-btn" onClick={onBack}>← Πίσω</button>
             <div className="login-box">
-                <img src="/aade-logo.png" style={{height:60}} alt="" />
+                <img src="/aade-logo.png" style={{height:60}} alt="Logo" />
                 
                 <h2>{needs2FA ? 'Έλεγχος 2FA' : 'Είσοδος'}</h2>
                 

@@ -1,6 +1,7 @@
 Flask
 Flask-SQLAlchemy
 Flask-Cors
+Flask-Limiter
 gunicorn
 psycopg2-binary
 requests
