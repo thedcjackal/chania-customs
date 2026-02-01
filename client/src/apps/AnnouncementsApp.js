@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import { API_URL } from '../config';
 import { Trash2, Send, CheckCircle, Edit2, X } from 'lucide-react'; // REMOVED AlertTriangle
 
@@ -14,7 +14,7 @@ export const AnnouncementsApp = ({ user, onExit }) => {
     }, []);
 
     const fetchAnnouncements = async () => {
-        const res = await axios.get(`${API_URL}/announcements`);
+        const res = await api.get(`${API_URL}/announcements`);
         setAnnouncements(res.data);
     };
 
@@ -39,11 +39,11 @@ export const AnnouncementsApp = ({ user, onExit }) => {
         try {
             if (editId) {
                 // Update
-                await axios.put(`${API_URL}/announcements`, { ...formData, id: editId });
+                await api.put(`${API_URL}/announcements`, { ...formData, id: editId });
                 setSuccessMsg('Η ανακοίνωση ενημερώθηκε!');
             } else {
                 // Create
-                await axios.post(`${API_URL}/announcements`, formData);
+                await api.post(`${API_URL}/announcements`, formData);
                 setSuccessMsg('Η ανακοίνωση προστέθηκε!');
             }
             
@@ -58,7 +58,7 @@ export const AnnouncementsApp = ({ user, onExit }) => {
 
     const handleDelete = async (id) => {
         if (!window.confirm("Διαγραφή ανακοίνωσης;")) return;
-        await axios.delete(`${API_URL}/announcements?id=${id}`);
+        await api.delete(`${API_URL}/announcements?id=${id}`);
         fetchAnnouncements();
     };
 

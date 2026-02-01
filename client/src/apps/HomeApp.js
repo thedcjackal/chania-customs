@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect,useState } from 'react';
+import { supabase } from '../supabase';
 import { Calendar, Info, FileText, Users, Megaphone, LogOut, Phone } from 'lucide-react';
-
+import { MFASetup } from '../components/MFASetup';
 // --- HELPER: Greek Vocative Case Converter ---
 const toVocative = (name) => {
     if (!name) return '';
@@ -15,11 +16,27 @@ const toVocative = (name) => {
 };
 
 export const HomeApp = ({ user, onAppSelect, onLogout }) => {
-    
+    const [showMFA, setShowMFA] = useState(false);
+    const [isLocked, setIsLocked] = useState(false);
     // Ασφαλής ανάκτηση των δικαιωμάτων. Αν είναι root_admin τα βλέπει όλα, αλλιώς ελέγχουμε τη λίστα.
     const allowedApps = user.allowed_apps || [];
     const isRoot = user.role === 'root_admin';
 
+    useEffect(() => {
+        const checkSecurity = async () => {
+            const { data: factors } = await supabase.auth.mfa.listFactors();
+            const has2FA = factors?.totp?.some(f => f.status === 'verified');
+
+            if (has2FA) {
+                const { data } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+                if (data.currentLevel === 'aal1') {
+                    // User slipped through! Lock them out.
+                    setIsLocked(true);
+                }
+            }
+        };
+        checkSecurity();
+    }, []);
     // Helper function to check rights
     const hasRight = (appId) => isRoot || allowedApps.includes(appId);
 
@@ -36,7 +53,27 @@ export const HomeApp = ({ user, onAppSelect, onLogout }) => {
         flexShrink: 0 // Prevent squashing
     });
 
+    // --- LOCK SCREEN ---
+    if (isLocked) {
+        return (
+            <div style={{
+                height: '100vh', display: 'flex', flexDirection: 'column', 
+                alignItems: 'center', justifyContent: 'center', background: '#f8f9fa'
+            }}>
+                <h2 style={{color: '#c62828'}}>⚠️ Απαιτείται Έλεγχος Ασφαλείας</h2>
+                <p>Ο λογαριασμός σας διαθέτει 2FA, αλλά δεν έχει γίνει επιβεβαίωση.</p>
+                <button 
+                    onClick={onLogout}
+                    style={{padding: '10px 20px', background: '#002F6C', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', marginTop: 20}}
+                >
+                    Επιστροφή στην Είσοδο
+                </button>
+            </div>
+        );
+    }
+    
     return (
+        
         <div className="app-shell">
             <div className="home-layout">
                 
@@ -54,7 +91,8 @@ export const HomeApp = ({ user, onAppSelect, onLogout }) => {
                         <p className="welcome-msg">
                             Καλωσήρθες, {toVocative(user?.name || user?.username)}
                         </p>
-                        
+                        <button onClick={() => setShowMFA(true)}>Setup 2FA</button>
+                        {showMFA && <MFASetup onCancel={() => setShowMFA(false)} />}
                         <button onClick={onLogout} className="home-logout-btn">
                             <LogOut size={20} /> Αποσύνδεση
                         </button>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import { API_URL } from '../config';
 
 export const UserManager = () => {
@@ -22,7 +22,7 @@ export const UserManager = () => {
     ];
     
     useEffect(() => { 
-        axios.get(`${API_URL}/admin/users`)
+        api.get(`${API_URL}/admin/users`)
             .then(res => setUsers(res.data))
             .catch(err => console.error(err));
     }, []); 
@@ -52,8 +52,8 @@ export const UserManager = () => {
         }; 
         
         try {
-            if(modal.id) await axios.put(`${API_URL}/admin/users`, p); 
-            else await axios.post(`${API_URL}/admin/users`, p); 
+            if(modal.id) await api.put(`${API_URL}/admin/users`, p); 
+            else await api.post(`${API_URL}/admin/users`, p); 
             
             setModal(null); 
             window.location.reload(); 
@@ -64,7 +64,7 @@ export const UserManager = () => {
 
     const del = async (id) => { 
         if(window.confirm("Διαγραφή;")) {
-            await axios.delete(`${API_URL}/admin/users?id=${id}`); 
+            await api.delete(`${API_URL}/admin/users?id=${id}`); 
             window.location.reload(); 
         }
     }; 
@@ -163,14 +163,14 @@ export const ReferenceManager = ({type, title, placeholder}) => {
     const [editText, setEditText] = useState(''); 
     
     useEffect(() => { 
-        axios.get(`${API_URL}/admin/reference`)
+        api.get(`${API_URL}/admin/reference`)
             .then(res => setList(res.data[type] || []))
             .catch(err => console.error("Ref load error", err));
     }, [type]); 
 
-    const add = async () => { if(text) await axios.post(`${API_URL}/admin/reference`, {type, value:text}); setText(''); window.location.reload(); }; 
-    const saveEdit = async () => { await axios.put(`${API_URL}/admin/reference`, {type, old_value: editMode, new_value: editText}); setEditMode(null); window.location.reload(); }; 
-    const del = async (val) => { if(window.confirm("Διαγραφή;")) await axios.delete(`${API_URL}/admin/reference?type=${type}&value=${val}`); window.location.reload(); }; 
+    const add = async () => { if(text) await api.post(`${API_URL}/admin/reference`, {type, value:text}); setText(''); window.location.reload(); }; 
+    const saveEdit = async () => { await api.put(`${API_URL}/admin/reference`, {type, old_value: editMode, new_value: editText}); setEditMode(null); window.location.reload(); }; 
+    const del = async (val) => { if(window.confirm("Διαγραφή;")) await api.delete(`${API_URL}/admin/reference?type=${type}&value=${val}`); window.location.reload(); }; 
     
     return (
         <div className="admin-section">
@@ -185,11 +185,11 @@ export const AnnouncementManager = () => {
     const [list, setList] = useState([]); 
     const [text, setText] = useState(''); 
     
-    const load = () => axios.get(`${API_URL}/announcements`).then(res => setList(res.data)); 
+    const load = () => api.get(`${API_URL}/announcements`).then(res => setList(res.data)); 
     useEffect(() => { load(); }, []); 
     
-    const add = async () => { if(text) await axios.post(`${API_URL}/announcements`, {text}); setText(''); load(); }; 
-    const del = async (id) => { await axios.delete(`${API_URL}/announcements?id=${id}`); load(); }; 
+    const add = async () => { if(text) await api.post(`${API_URL}/announcements`, {text}); setText(''); load(); }; 
+    const del = async (id) => { await api.delete(`${API_URL}/announcements?id=${id}`); load(); }; 
     
     return (
         <div className="admin-section">

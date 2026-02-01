@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import { API_URL } from '../config';
+import { supabase } from '../supabase'; // <--- 1. NEW IMPORT
 import '../App.css';
 import { AlertTriangle, X } from 'lucide-react';
 
@@ -39,7 +40,7 @@ export const WelcomePage = ({ onNavigate }) => {
     const [selectedAnn, setSelectedAnn] = useState(null);
 
     useEffect(() => {
-        axios.get(`${API_URL}/announcements`)
+        api.get(`${API_URL}/announcements`)
             .then(res => setAnnouncements(res.data.slice(0, 1))) 
             .catch(err => console.error(err))
             .finally(() => setLoading(false));
@@ -151,7 +152,7 @@ export const AnnouncementsPage = ({ onNavigate }) => {
     const [selectedAnn, setSelectedAnn] = useState(null);
 
     useEffect(() => { 
-        axios.get(`${API_URL}/announcements`)
+        api.get(`${API_URL}/announcements`)
             .then(res => setList(res.data))
             .finally(() => setLoading(false));
     }, []);
@@ -212,24 +213,122 @@ export const AnnouncementsPage = ({ onNavigate }) => {
     );
 };
 
-export const Login = ({ onLogin, onBack }) => {
-    const [creds, setCreds] = useState({username:'', password:''});
+// --- UPDATED LOGIN COMPONENT ---
+export const Login = ({ onBack }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    
+    // NEW STATES FOR 2FA
+    const [needs2FA, setNeeds2FA] = useState(false);
+    const [token2FA, setToken2FA] = useState('');
+    const [factorId, setFactorId] = useState(''); // To store which device we are verifying
+    
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
     const handleSubmit = async (e) => { 
         e.preventDefault(); 
-        try { 
-            const res = await axios.post(`${API_URL}/login`, creds); 
-            onLogin(res.data); 
-        } catch { alert('Αποτυχία εισόδου.'); } 
+        setLoading(true);
+        setError(null);
+        
+        try {
+            if (!needs2FA) {
+                // PHASE 1: STANDARD LOGIN
+                const { data, error } = await supabase.auth.signInWithPassword({
+                    email: email,
+                    password: password,
+                });
+
+                if (error) throw error;
+
+                // CHECK IF 2FA IS REQUIRED
+                // We ask Supabase: "Does this user have any verified factors?"
+                const { data: factors } = await supabase.auth.mfa.listFactors();
+                const totpFactor = factors.totp.find(f => f.status === 'verified');
+
+                if (totpFactor) {
+                    // User has 2FA! Stop them and show the 2FA input.
+                    setFactorId(totpFactor.id);
+                    setNeeds2FA(true);
+                    setLoading(false);
+                    return; // Don't redirect yet
+                }
+
+                // If no 2FA, the App.js listener will handle the redirect automatically.
+            } else {
+                // PHASE 2: VERIFY 2FA CODE
+                const { data, error } = await supabase.auth.mfa.challengeAndVerify({
+                    factorId: factorId,
+                    code: token2FA,
+                });
+
+                if (error) throw error;
+                // Success! The session is now upgraded to "AAL2" (Authenticator Assurance Level 2)
+            }
+        } catch (err) {
+            setError(err.message === "Invalid login credentials" ? "Λάθος στοιχεία" : "Σφάλμα: " + err.message);
+            setLoading(false);
+        }
     };
+
     return (
         <div className="login-wrapper">
             <button className="back-btn" onClick={onBack}>← Πίσω</button>
             <div className="login-box">
                 <img src="/aade-logo.png" style={{height:60}} alt="" />
-                <h2>Είσοδος</h2>
-                <input onChange={e=>setCreds({...creds, username:e.target.value})} placeholder="Όνομα Χρήστη"/>
-                <input type="password" onChange={e=>setCreds({...creds, password:e.target.value})} placeholder="Κωδικός"/>
-                <button onClick={handleSubmit}>Σύνδεση</button>
+                
+                {/* DYNAMIC HEADER */}
+                <h2>{needs2FA ? 'Έλεγχος 2FA' : 'Είσοδος'}</h2>
+                
+                {error && <div style={{background:'#ffebee', color:'#c62828', padding:'10px', borderRadius:'4px', marginBottom:'10px', fontSize:'0.9rem'}}>{error}</div>}
+                
+                <form onSubmit={handleSubmit} style={{display:'flex', flexDirection:'column', gap:'10px', width:'100%'}}>
+                    
+                    {!needs2FA ? (
+                        /* STANDARD FORM */
+                        <>
+                            <input 
+                                type="email" 
+                                value={email}
+                                onChange={e => setEmail(e.target.value)} 
+                                placeholder="Email"
+                                required
+                                style={{padding:'10px', borderRadius:'4px', border:'1px solid #ccc'}}
+                            />
+                            <input 
+                                type="password" 
+                                value={password}
+                                onChange={e => setPassword(e.target.value)} 
+                                placeholder="Κωδικός"
+                                required
+                                style={{padding:'10px', borderRadius:'4px', border:'1px solid #ccc'}}
+                            />
+                        </>
+                    ) : (
+                        /* 2FA FORM */
+                        <>
+                            <p style={{textAlign:'center', marginBottom:5}}>Εισάγετε τον κωδικό από την εφαρμογή Authenticator.</p>
+                            <input 
+                                type="text" 
+                                maxLength="6"
+                                value={token2FA}
+                                onChange={e => setToken2FA(e.target.value)} 
+                                placeholder="000000"
+                                required
+                                autoFocus
+                                style={{padding:'10px', borderRadius:'4px', border:'1px solid #ccc', textAlign:'center', fontSize:'1.2rem', letterSpacing:'5px'}}
+                            />
+                        </>
+                    )}
+
+                    <button 
+                        type="submit" 
+                        disabled={loading}
+                        style={{marginTop:'10px', padding:'10px', background: loading ? '#ccc' : '#002F6C', color:'white', border:'none', borderRadius:'4px', cursor: loading ? 'default' : 'pointer'}}
+                    >
+                        {loading ? 'Έλεγχος...' : (needs2FA ? 'Επιβεβαίωση' : 'Σύνδεση')}
+                    </button>
+                </form>
             </div>
         </div>
     );

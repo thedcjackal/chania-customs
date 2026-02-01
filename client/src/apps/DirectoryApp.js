@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import { API_URL } from '../config';
 import { Plus, Trash2, Edit2, Save, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { SupervisorIcon } from '../App'; 
@@ -21,7 +21,7 @@ export const DirectoryApp = ({ onExit }) => {
 
     const fetchDirectory = async () => {
         try {
-            const res = await axios.get(`${API_URL}/directory`);
+            const res = await api.get(`${API_URL}/directory`);
             setDirectory(res.data);
             if (selectedDept) {
                 const updated = res.data.find(d => d.id === selectedDept.id);
@@ -35,9 +35,9 @@ export const DirectoryApp = ({ onExit }) => {
     const saveDepartment = async () => {
         if (!deptForm.name) return;
         if (deptForm.id) {
-            await axios.put(`${API_URL}/directory/departments`, { id: deptForm.id, name: deptForm.name });
+            await api.put(`${API_URL}/directory/departments`, { id: deptForm.id, name: deptForm.name });
         } else {
-            await axios.post(`${API_URL}/directory/departments`, { name: deptForm.name });
+            await api.post(`${API_URL}/directory/departments`, { name: deptForm.name });
         }
         setDeptForm({ id: null, name: '' });
         fetchDirectory();
@@ -48,7 +48,7 @@ export const DirectoryApp = ({ onExit }) => {
 
     const deleteDepartment = async (id) => {
         if (!window.confirm("Διαγραφή τμήματος και όλων των επαφών του;")) return;
-        await axios.delete(`${API_URL}/directory/departments?id=${id}`);
+        await api.delete(`${API_URL}/directory/departments?id=${id}`);
         if (selectedDept?.id === id) setSelectedDept(null);
         fetchDirectory();
     };
@@ -63,15 +63,15 @@ export const DirectoryApp = ({ onExit }) => {
         
         setDirectory(newDirectory);
         const orderedIds = newDirectory.map(d => d.id);
-        await axios.post(`${API_URL}/directory/departments`, { action: 'reorder', ordered_ids: orderedIds });
+        await api.post(`${API_URL}/directory/departments`, { action: 'reorder', ordered_ids: orderedIds });
     };
 
     const savePhone = async () => {
         if (!phoneForm.number || !selectedDept) return;
         if (editingPhone) {
-            await axios.put(`${API_URL}/directory/phones`, { ...phoneForm, id: editingPhone.id });
+            await api.put(`${API_URL}/directory/phones`, { ...phoneForm, id: editingPhone.id });
         } else {
-            await axios.post(`${API_URL}/directory/phones`, { ...phoneForm, dept_id: selectedDept.id });
+            await api.post(`${API_URL}/directory/phones`, { ...phoneForm, dept_id: selectedDept.id });
         }
         setPhoneForm({ number: '', is_supervisor: false });
         setEditingPhone(null);
@@ -80,7 +80,7 @@ export const DirectoryApp = ({ onExit }) => {
 
     const deletePhone = async (id) => {
         if (!window.confirm("Διαγραφή επαφής;")) return;
-        await axios.delete(`${API_URL}/directory/phones?id=${id}`);
+        await api.delete(`${API_URL}/directory/phones?id=${id}`);
         fetchDirectory();
     };
 

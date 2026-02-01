@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import { API_URL } from '../config';
 import { 
     Check, X, Trash2, Edit2, Plus, 
@@ -25,7 +25,7 @@ export const AccountManager = ({ onExit }) => {
 
     const fetchUsers = async () => {
         try {
-            const res = await axios.get(`${API_URL}/admin/users`);
+            const res = await api.get(`${API_URL}/admin/users`);
             setUsers(res.data);
         } catch (e) { console.error(e); }
     };
@@ -34,9 +34,9 @@ export const AccountManager = ({ onExit }) => {
         e.preventDefault();
         try {
             if (editingUser) {
-                await axios.put(`${API_URL}/admin/users`, { ...formData, id: editingUser.id });
+                await api.put(`${API_URL}/admin/users`, { ...formData, id: editingUser.id });
             } else {
-                await axios.post(`${API_URL}/admin/users`, formData);
+                await api.post(`${API_URL}/admin/users`, formData);
             }
             setEditingUser(null);
             resetForm();
@@ -46,7 +46,7 @@ export const AccountManager = ({ onExit }) => {
 
     const handleDelete = async (id) => {
         if (window.confirm('Διαγραφή χρήστη;')) {
-            await axios.delete(`${API_URL}/admin/users?id=${id}`);
+            await api.delete(`${API_URL}/admin/users?id=${id}`);
             fetchUsers();
         }
     };

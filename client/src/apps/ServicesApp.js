@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import api from '../api/axios';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { API_URL } from '../config';
@@ -117,23 +117,23 @@ export const ServicesApp = ({ user, onExit }) => {
     // Define this BEFORE useEffect so it can be included in deps if needed, 
     // or keep it outside and disable eslint rule.
     const loadMyUnavailability = async () => {
-        const res = await axios.get(`${API_URL}/services/unavailability?employee_id=${user.id}`);
+        const res = await api.get(`${API_URL}/services/unavailability?employee_id=${user.id}`);
         setMyUnavail(res.data);
     };
 
     useEffect(() => {
         const fetchAll = async () => {
             try {
-                const c = await axios.get(`${API_URL}/admin/services/config`); setConfig(c.data);
-                const s = await axios.get(`${API_URL}/services/schedule`); setSchedule(s.data);
-                const e = await axios.get(`${API_URL}/admin/employees`); setEmployees(e.data);
+                const c = await api.get(`${API_URL}/admin/services/config`); setConfig(c.data);
+                const s = await api.get(`${API_URL}/services/schedule`); setSchedule(s.data);
+                const e = await api.get(`${API_URL}/admin/employees`); setEmployees(e.data);
                 
                 if (isAdmin) {
-                    const setRes = await axios.get(`${API_URL}/admin/settings`);
+                    const setRes = await api.get(`${API_URL}/admin/settings`);
                     if(setRes.data) setGeneralSettings(prev => ({...prev, declaration_deadline: setRes.data.declaration_deadline || 25, signee_name: setRes.data.signee_name || ''}));
                 } else {
                      try {
-                         const setRes = await axios.get(`${API_URL}/admin/settings`); 
+                         const setRes = await api.get(`${API_URL}/admin/settings`); 
                          if(setRes.data) setGeneralSettings(prev => ({...prev, declaration_deadline: setRes.data.declaration_deadline || 25}));
                      } catch(e) {}
                      loadMyUnavailability();
@@ -146,7 +146,7 @@ export const ServicesApp = ({ user, onExit }) => {
 
     useEffect(() => {
         if(tab === 'balance' && isAdmin) {
-            axios.get(`${API_URL}/services/balance`, {
+            api.get(`${API_URL}/services/balance`, {
                 params: {
                     start: balanceRange.start,
                     end: balanceRange.end
@@ -161,7 +161,7 @@ export const ServicesApp = ({ user, onExit }) => {
     useEffect(() => {
         if (isAdmin) {
             const mStr = currentMonth.toISOString().slice(0, 7);
-            axios.get(`${API_URL}/admin/schedule_metadata?month=${mStr}`)
+            api.get(`${API_URL}/admin/schedule_metadata?month=${mStr}`)
                 .then(res => setProtocolData({ protocol_num: res.data.protocol_num || '', protocol_date: res.data.protocol_date || '' }))
                 .catch(() => setProtocolData({ protocol_num: '', protocol_date: '' }));
         }
@@ -171,7 +171,7 @@ export const ServicesApp = ({ user, onExit }) => {
     useEffect(() => {
         if ((tab === 'declare' || tab === 'myschedule') && !isAdmin) {
             const mStr = currentMonth.toISOString().slice(0, 7);
-            axios.get(`${API_URL}/services/preferences?user_id=${user.id}&month=${mStr}`)
+            api.get(`${API_URL}/services/preferences?user_id=${user.id}&month=${mStr}`)
                 .then(res => setDoubleDutyPref(res.data.prefer_double_sk))
                 .catch(e => console.error(e));
         }
@@ -182,7 +182,7 @@ export const ServicesApp = ({ user, onExit }) => {
         setDoubleDutyPref(newVal);
         const mStr = currentMonth.toISOString().slice(0, 7);
         try {
-            await axios.post(`${API_URL}/services/preferences`, {
+            await api.post(`${API_URL}/services/preferences`, {
                 user_id: user.id,
                 month: mStr,
                 value: newVal
@@ -195,7 +195,7 @@ export const ServicesApp = ({ user, onExit }) => {
     
     const saveGeneralSettings = async () => {
         try {
-            const curr = await axios.get(`${API_URL}/admin/settings`);
+            const curr = await api.get(`${API_URL}/admin/settings`);
             const payload = curr.data;
             
             const fullPayload = {
@@ -204,10 +204,10 @@ export const ServicesApp = ({ user, onExit }) => {
                 declaration_deadline: parseInt(generalSettings.declaration_deadline),
                 signee_name: generalSettings.signee_name
             };
-            await axios.post(`${API_URL}/admin/settings`, fullPayload);
+            await api.post(`${API_URL}/admin/settings`, fullPayload);
             
             const mStr = currentMonth.toISOString().slice(0, 7);
-            await axios.post(`${API_URL}/admin/schedule_metadata`, {
+            await api.post(`${API_URL}/admin/schedule_metadata`, {
                 month: mStr,
                 protocol_num: protocolData.protocol_num,
                 protocol_date: protocolData.protocol_date
@@ -234,16 +234,16 @@ export const ServicesApp = ({ user, onExit }) => {
 
         const exists = myUnavail.find(u => u.date === dateStr);
         setMyUnavail(prev => exists ? prev.filter(u=>u.date!==dateStr) : [...prev, {date: dateStr, employee_id: user.id}]);
-        if (exists) await axios.delete(`${API_URL}/services/unavailability?employee_id=${user.id}&date=${dateStr}`);
-        else await axios.post(`${API_URL}/services/unavailability`, { employee_id: user.id, date: dateStr });
+        if (exists) await api.delete(`${API_URL}/services/unavailability?employee_id=${user.id}&date=${dateStr}`);
+        else await api.post(`${API_URL}/services/unavailability`, { employee_id: user.id, date: dateStr });
         loadMyUnavailability();
     };
 
     const assignEmployee = async (date, dutyId, shiftIdx, empId) => {
         if (!empId) return;
         try {
-            await axios.post(`${API_URL}/services/schedule`, { date, duty_id: dutyId, shift_index: shiftIdx, employee_id: empId });
-            const s = await axios.get(`${API_URL}/services/schedule`); setSchedule(s.data);
+            await api.post(`${API_URL}/services/schedule`, { date, duty_id: dutyId, shift_index: shiftIdx, employee_id: empId });
+            const s = await api.get(`${API_URL}/services/schedule`); setSchedule(s.data);
         } catch (e) { alert(e.response?.data?.error || "Η ανάθεση απέτυχε"); }
     };
 
@@ -296,10 +296,10 @@ export const ServicesApp = ({ user, onExit }) => {
         }
 
         try {
-            await axios.post(`${API_URL}/admin/services/config`, { ...config, duties: newDuties }); 
+            await api.post(`${API_URL}/admin/services/config`, { ...config, duties: newDuties }); 
             setDutyForm({}); 
             setDutyEditMode(null); 
-            const c = await axios.get(`${API_URL}/admin/services/config`); 
+            const c = await api.get(`${API_URL}/admin/services/config`); 
             setConfig(c.data);
         } catch (e) { 
             alert("Σφάλμα αποθήκευσης: " + (e.response?.data?.error || e.message)); 
@@ -321,7 +321,7 @@ export const ServicesApp = ({ user, onExit }) => {
         duty.shift_config = sConf;
         newDuties[dIdx] = duty;
         setConfig({ ...config, duties: newDuties });
-        await axios.post(`${API_URL}/admin/services/config`, { ...config, duties: newDuties });
+        await api.post(`${API_URL}/admin/services/config`, { ...config, duties: newDuties });
     };
 
     const updateHandicap = async (dutyId, shiftIdx, empId, val) => {
@@ -338,7 +338,7 @@ export const ServicesApp = ({ user, onExit }) => {
         duty.shift_config = sConf;
         newDuties[dIdx] = duty;
         setConfig({ ...config, duties: newDuties });
-        await axios.post(`${API_URL}/admin/services/config`, { ...config, duties: newDuties });
+        await api.post(`${API_URL}/admin/services/config`, { ...config, duties: newDuties });
     };
 
     const deleteDuty = async (id) => {
@@ -414,11 +414,11 @@ export const ServicesApp = ({ user, onExit }) => {
          }
 
          try {
-             await axios.post(`${API_URL}/admin/special_dates`, { 
+             await api.post(`${API_URL}/admin/special_dates`, { 
                  date: dateToSend, 
                  description: newSpecialDesc || 'Αργία' 
              });
-             const c = await axios.get(`${API_URL}/admin/services/config`); 
+             const c = await api.get(`${API_URL}/admin/services/config`); 
              setConfig(c.data);
              setNewSpecialDate('');
              setNewSpecialDesc('');
@@ -431,8 +431,8 @@ export const ServicesApp = ({ user, onExit }) => {
     const removeSpecial = async (dStr) => {
         if(!window.confirm("Διαγραφή ειδικής ημερομηνίας;")) return;
         try {
-            await axios.delete(`${API_URL}/admin/special_dates?date=${dStr}`);
-            const c = await axios.get(`${API_URL}/admin/services/config`); 
+            await api.delete(`${API_URL}/admin/special_dates?date=${dStr}`);
+            const c = await api.get(`${API_URL}/admin/services/config`); 
             setConfig(c.data);
         } catch (e) { alert("Error"); }
     };
@@ -443,11 +443,11 @@ export const ServicesApp = ({ user, onExit }) => {
         if (!window.confirm(`Προσοχή! Αυτή η ενέργεια θα διαγράψει και θα ξαναδημιουργήσει το πρόγραμμα για τον μήνα ${schedulerRange.start}. Συνέχεια;`)) return;
 
         try {
-            const res = await axios.post(`${API_URL}/services/run_scheduler`, { 
+            const res = await api.post(`${API_URL}/services/run_scheduler`, { 
                 start: schedulerRange.start, 
                 end: schedulerRange.start // Single month logic
             });
-            const s = await axios.get(`${API_URL}/services/schedule`); 
+            const s = await api.get(`${API_URL}/services/schedule`); 
             setSchedule(s.data);
             setSchedulerLogs(res.data.logs || []);
             setSchedulerModal(false); 
@@ -468,8 +468,8 @@ export const ServicesApp = ({ user, onExit }) => {
         const endStr = endDt.toISOString().split('T')[0];
 
         try { 
-            await axios.post(`${API_URL}/services/clear_schedule`, { start_date: start, end_date: endStr }); 
-            const s = await axios.get(`${API_URL}/services/schedule`); 
+            await api.post(`${API_URL}/services/clear_schedule`, { start_date: start, end_date: endStr }); 
+            const s = await api.get(`${API_URL}/services/schedule`); 
             setSchedule(s.data); 
             setClearModal(false); 
             alert("Το πρόγραμμα καθαρίστηκε!"); 
@@ -479,7 +479,7 @@ export const ServicesApp = ({ user, onExit }) => {
     const onDragStart = (e, index) => { setDraggedItem(employees[index]); e.dataTransfer.effectAllowed = "move"; };
     const onDragOver = (e, index) => { e.preventDefault(); setDragOverIndex(index); const draggedOverItem = employees[index]; if (draggedItem === draggedOverItem) return; let items = employees.filter(item => item !== draggedItem); items.splice(index, 0, draggedItem); setEmployees(items); };
     const onDrop = () => { setDraggedItem(null); setDragOverIndex(null); };
-    const saveSeniorityOrder = async () => { try { await axios.put(`${API_URL}/admin/employees`, { reorder: employees.map(e => e.id) }); alert("Η σειρά αρχαιότητας αποθηκεύτηκε!"); } catch (e) { alert("Αποτυχία αποθήκευσης."); } };
+    const saveSeniorityOrder = async () => { try { await api.put(`${API_URL}/admin/employees`, { reorder: employees.map(e => e.id) }); alert("Η σειρά αρχαιότητας αποθηκεύτηκε!"); } catch (e) { alert("Αποτυχία αποθήκευσης."); } };
     const getAvailableMonths = () => { const now = new Date(); let start = new Date(now.getFullYear(), now.getMonth(), 1); if (now.getDate() >= 27) start.setMonth(start.getMonth() + 2); else start.setMonth(start.getMonth() + 1); const months = []; for (let i = 0; i < 6; i++) { const m = new Date(start.getFullYear(), start.getMonth() + i, 1); months.push(m.toISOString().slice(0, 7)); } return months; };
 
     const generateServicePDF = async () => {
