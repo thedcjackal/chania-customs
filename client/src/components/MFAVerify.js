@@ -22,14 +22,15 @@ export const MFAVerify = () => {
         setError(null);
 
         try {
-            const { data, error } = await supabase.auth.mfa.challengeAndVerify({
+            // FIX: Removed unused 'data' variable
+            const { error } = await supabase.auth.mfa.challengeAndVerify({
                 factorId: factorId,
                 code: code,
             });
 
             if (error) throw error;
 
-            // SUCCESS: Force a session refresh so App.js detects the security level change immediately
+            // Success! Refresh session so App.js detects level change
             await supabase.auth.refreshSession();
             
         } catch (err) {

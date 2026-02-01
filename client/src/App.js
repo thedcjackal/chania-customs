@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import api from './api/axios';
-import { API_URL } from './config';
 import { supabase } from './supabase'; 
 import { Phone, Mail, ChevronDown, ChevronRight } from 'lucide-react';
 
@@ -113,8 +112,7 @@ function App() {
     // --- FETCH BACKEND PROFILE ---
     const fetchUserProfile = async (currentSession) => {
         try {
-            // FIX: Removed unused 'token' variable. 
-            // The secure 'api' client handles the token injection automatically.
+            // Secure 'api' client handles token injection automatically
             const res = await api.get('/api/auth/exchange'); 
             setUserProfile(res.data);
         } catch (error) {
