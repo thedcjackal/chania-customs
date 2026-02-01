@@ -22,7 +22,7 @@ export const HomeApp = ({ user, onAppSelect, onLogout }) => {
     const allowedApps = user.allowed_apps || [];
     const isRoot = user.role === 'root_admin';
 
-    useEffect(() => {
+useEffect(() => {
         const checkSecurity = async () => {
             const { data: factors } = await supabase.auth.mfa.listFactors();
             const has2FA = factors?.totp?.some(f => f.status === 'verified');
@@ -30,8 +30,7 @@ export const HomeApp = ({ user, onAppSelect, onLogout }) => {
             if (has2FA) {
                 const { data } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
                 if (data.currentLevel === 'aal1') {
-                    // User slipped through! Lock them out.
-                    setIsLocked(true);
+                    setIsLocked(true); // User slipped through without code -> Lock
                 }
             }
         };
@@ -56,22 +55,15 @@ export const HomeApp = ({ user, onAppSelect, onLogout }) => {
     // --- LOCK SCREEN ---
     if (isLocked) {
         return (
-            <div style={{
-                height: '100vh', display: 'flex', flexDirection: 'column', 
-                alignItems: 'center', justifyContent: 'center', background: '#f8f9fa'
-            }}>
+            <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f8f9fa' }}>
                 <h2 style={{color: '#c62828'}}>⚠️ Απαιτείται Έλεγχος Ασφαλείας</h2>
                 <p>Ο λογαριασμός σας διαθέτει 2FA, αλλά δεν έχει γίνει επιβεβαίωση.</p>
-                <button 
-                    onClick={onLogout}
-                    style={{padding: '10px 20px', background: '#002F6C', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', marginTop: 20}}
-                >
+                <button onClick={onLogout} style={{padding: '10px 20px', background: '#002F6C', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', marginTop: 20}}>
                     Επιστροφή στην Είσοδο
                 </button>
             </div>
         );
     }
-    
     return (
         
         <div className="app-shell">
@@ -91,14 +83,42 @@ export const HomeApp = ({ user, onAppSelect, onLogout }) => {
                         <p className="welcome-msg">
                             Καλωσήρθες, {toVocative(user?.name || user?.username)}
                         </p>
-                        <button onClick={() => setShowMFA(true)}>Setup 2FA</button>
-                        {showMFA && <MFASetup onCancel={() => setShowMFA(false)} />}
+                        {/* 2FA BUTTON - MODIFIED */}
+                    <button 
+                        onClick={() => setShowMFA(true)}
+                        style={{ 
+                            marginBottom: 15, // <--- MARGIN ADDED
+                            padding: '8px 16px', 
+                            background: '#002F6C', 
+                            color: 'white', 
+                            border: 'none', 
+                            borderRadius: 4, 
+                            cursor: 'pointer',
+                            fontWeight: 'bold'
+                        }}
+                        title="Διαχείριση Two-Factor Authentication"
+                    >
+                        2FA
+                    </button>
+                
                         <button onClick={onLogout} className="home-logout-btn">
                             <LogOut size={20} /> Αποσύνδεση
                         </button>
                     </div>
                 </div>
-
+{showMFA && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
+                    background: 'rgba(0,0,0,0.6)', zIndex: 9999, 
+                    display: 'flex', justifyContent: 'center', alignItems: 'center',
+                    backdropFilter: 'blur(3px)' // Nice blur effect
+                }}>
+                    <MFASetup 
+                        onCancel={() => setShowMFA(false)} 
+                        onSuccess={() => setTimeout(() => setShowMFA(false), 2000)}
+                    />
+                </div>
+            )}
                 {/* --- RIGHT COLUMN: APPS LIST --- */}
                 <div className="home-right">
                     <div style={{ width: '100%', maxWidth: '600px' }}>
