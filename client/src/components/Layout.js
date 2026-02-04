@@ -2,7 +2,17 @@ import React, { useState, useEffect } from 'react';
 import api from '../api/axios'; 
 import { supabase } from '../supabase'; 
 import '../App.css';
-import { AlertTriangle, X } from 'lucide-react';
+import { 
+  AlertTriangle, 
+  X, 
+  Briefcase, 
+  Phone, 
+  Mail, 
+  MapPin, 
+  ChevronDown, 
+  ChevronUp,
+  User
+} from 'lucide-react';
 
 // --- SHARED HELPERS ---
 export const formatDate = (isoString) => {
@@ -13,12 +23,25 @@ export const formatDate = (isoString) => {
 export const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
 export const getDayName = (year, month, day) => ['Κυρ','Δευ','Τρι','Τετ','Πεμ','Παρ','Σαβ'][new Date(year, month, day).getDay()];
 
-// --- SKELETON COMPONENT ---
+// --- SKELETON COMPONENT (Full Width Fix) ---
 const AnnouncementSkeleton = () => (
-    <div className="news-card" style={{ borderLeft: '4px solid #e0e0e0', minHeight: '85px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+    <div style={{ 
+        width: '100%',              
+        boxSizing: 'border-box',    
+        borderLeft: '4px solid #e0e0e0', 
+        backgroundColor: '#fff', 
+        height: '100%', 
+        //minHeight: '85px', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        justifyContent: 'center', 
+        borderRadius: '4px',
+        padding: '15px', 
+        boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
+    }}>
         <div style={{ width: '85px', height: '14px', background: '#e0e0e0', borderRadius: '4px', marginBottom: '10px' }}></div>
-        <div style={{ width: '100%', height: '16px', background: '#f5f5f5', borderRadius: '4px', marginBottom: '6px' }}></div>
-        <div style={{ width: '70%', height: '16px', background: '#f5f5f5', borderRadius: '4px' }}></div>
+        <div style={{ width: '90%', height: '16px', background: '#f5f5f5', borderRadius: '4px', marginBottom: '6px' }}></div>
+        <div style={{ width: '60%', height: '16px', background: '#f5f5f5', borderRadius: '4px' }}></div>
     </div>
 );
 
@@ -37,6 +60,15 @@ export const WelcomePage = ({ onNavigate }) => {
     const [announcements, setAnnouncements] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedAnn, setSelectedAnn] = useState(null);
+    
+    // --- STATE FOR MODALS ---
+    const [showTerms, setShowTerms] = useState(false);
+    
+    // --- AGENTS STATE ---
+    const [showAgents, setShowAgents] = useState(false);
+    const [agentsLoading, setAgentsLoading] = useState(false);
+    const [randomAgents, setRandomAgents] = useState([]);
+    const [expandedAgentId, setExpandedAgentId] = useState(null);
 
     useEffect(() => {
         api.get('/api/announcements')
@@ -45,47 +77,300 @@ export const WelcomePage = ({ onNavigate }) => {
             .finally(() => setLoading(false));
     }, []);
 
+    // --- AGENTS HANDLERS ---
+    const handleOpenAgents = async () => {
+        setShowAgents(true);
+        setAgentsLoading(true);
+        setExpandedAgentId(null);
+
+        try {
+            const { data, error } = await supabase
+                .from('customs_agents')
+                .select('*');
+
+            if (error) throw error;
+
+            if (data) {
+                let shuffled = [...data];
+                for (let i = shuffled.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+                }
+                setRandomAgents(shuffled);
+            }
+        } catch (err) {
+            console.error("Error loading agents:", err);
+            setRandomAgents([]);
+        } finally {
+            setAgentsLoading(false);
+        }
+    };
+
+    const toggleAgent = (id) => {
+        setExpandedAgentId(expandedAgentId === id ? null : id);
+    };
+
     return (
-        <div className="welcome-container">
+        <div className="welcome-container" style={{ position: 'relative', minHeight: '100vh', paddingBottom: '60px' }}>
             <header className="public-header">
                 <img src="/aade-logo.png" className="header-logo" alt="AADE Logo" width="180" height="60" style={{height: '60px', width: 'auto'}} />
                 <button className="login-btn" onClick={() => onNavigate('login')}>Είσοδος</button>
             </header>
             
             <div className="hero-section" style={{ position: 'relative', minHeight: '300px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' }}>
-                <img src="/watermark.jpg" alt="Watermark" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 0, height: 'auto', width: '75%', opacity: 0.15 }} />
+                <img src="/watermark.jpg" alt="Watermark" style={{ position: 'absolute', top: '45%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 0, height: 'auto', width: '40%', opacity: 0.15 }} />
                 <div style={{ zIndex: 1, textAlign: 'center' }}>
                     <h1>Τελωνείο Χανίων</h1>
                     <p className="hero-subtitle">Ψηφιακή Πύλη</p>
                 </div>
             </div>
             
-            <div className="news-section">
-                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 15}}>
-                    <h3>Τελευταίες Ανακοινώσεις</h3>
-                    <button className="small-btn secondary" onClick={() => onNavigate('announcements')}>Περισσότερα</button>
+            {/* --- MAIN CONTENT CONTAINER --- */}
+            <div style={{ minWidth: '55%',maxWidth: '55%', margin: '0 auto', padding: '20px' }}>
+                
+                {/* ROW 1: Title (Far Left) */}
+                <div style={{ marginBottom: 15, textAlign: 'left' }}>
+                    <h3 style={{ margin: 0 }}>Τελευταία Ανακοίνωση</h3>
                 </div>
-                <div style={{ minHeight: '120px' }}>
-                    {loading ? <AnnouncementSkeleton /> : announcements.length > 0 ? (
-                        announcements.map(a => (
-                            <div key={a.id} className="news-card" onClick={() => setSelectedAnn(a)} style={{ cursor: 'pointer', background: a.is_important ? '#fffde7' : 'white', borderLeft: a.is_important ? '5px solid #ff9800' : '5px solid #2196F3', transition: 'transform 0.2s', minHeight: '85px' }} onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'} onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}>
-                                <small style={{ color: '#666', display: 'flex', alignItems: 'center', gap: '5px' }}>{a.is_important && <AlertTriangle size={24} color="#f57c00" />} {formatDate(a.date)}</small>
-                                <p style={{ fontWeight: a.is_important ? '600' : '400', color: '#333' }}>{a.text}</p>
+
+                {/* ROW 2: Cards (News + Agents) */}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
+                    
+                    {/* LEFT: News Card (Flex 9) */}
+                    <div style={{ flex: '9', width: '100%', minWidth: 0 }}> 
+                        {loading ? (
+                           
+                                <AnnouncementSkeleton />
+                          
+                        ) : announcements.length > 0 ? (
+                            announcements.map(a => (
+                                <div 
+                                    key={a.id} 
+                                    className="news-card" 
+                                    onClick={() => setSelectedAnn(a)} 
+                                    style={{ 
+                                        cursor: 'pointer', 
+                                        background: a.is_important ? '#fffde7' : 'white', 
+                                        borderLeft: a.is_important ? '5px solid #ff9800' : '5px solid #2196F3', 
+                                        transition: 'transform 0.2s', 
+                                        borderRadius: '4px',
+                                        height: '100%', 
+                                        boxSizing: 'border-box',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        justifyContent: 'center',
+                                        width: '100%' 
+                                    }} 
+                                    onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'} 
+                                    onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
+                                >
+                                    <small style={{ color: '#666', display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
+                                        {a.is_important && <AlertTriangle size={24} color="#f57c00" />} {formatDate(a.date)}
+                                    </small>
+                                    <p style={{ 
+                                        fontWeight: a.is_important ? '600' : '400', 
+                                        color: '#333', 
+                                        margin: 0,
+                                        display: '-webkit-box',
+                                        WebkitLineClamp: 2, // Show max 3 lines
+                                        WebkitBoxOrient: 'vertical',
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                        textAlign:"left",
+                                    }}>
+                                        {a.text}
+                                    </p>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="news-card" style={{ textAlign:'center', color:'#888', display:'flex', alignItems:'center', justifyContent:'center', height: '100%', minHeight:'85px', borderRadius: '4px', width: '100%' }}>
+                                Δεν υπάρχουν ανακοινώσεις.
                             </div>
-                        ))
-                    ) : <div className="news-card" style={{ textAlign:'center', color:'#888', display:'flex', alignItems:'center', justifyContent:'center', minHeight:'85px' }}>Δεν υπάρχουν ανακοινώσεις.</div>}
+                        )}
+                    </div>
+
+                    {/* RIGHT: Agents Card (Flex 1) */}
+                    <div 
+                        onClick={handleOpenAgents}
+                        style={{ 
+                            flex: '1', 
+                            minWidth: '140px', 
+                            background: 'white', 
+                            borderRight: '5px solid #2196F3', 
+                            borderRadius: '4px',
+                            padding: '10px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            alignItems: 'center',
+                            color: '#333',
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                            transition: 'transform 0.2s',
+                            minHeight: '110px'
+                        }}
+                        onMouseEnter={e => {
+                            e.currentTarget.style.transform = 'translateY(-2px)';
+                            e.currentTarget.style.boxShadow = '0 4px 6px rgba(0,0,0,0.1)';
+                        }} 
+                        onMouseLeave={e => {
+                            e.currentTarget.style.transform = 'translateY(0)';
+                            e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+                        }}
+                    >
+                        <Briefcase size={28} style={{ marginBottom: '8px', color: '#2196F3', opacity: 0.9 }} />
+                        <h3 style={{ margin: '0', fontSize: '0.9rem', textAlign: 'center', fontWeight: '600' }}>Εκτελωνιστές</h3>
+                    </div>
+
                 </div>
+
+                {/* ROW 3: Button (Far Left) */}
+                <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-start' }}>
+                    <button 
+                        className="small-btn secondary" 
+                        onClick={() => onNavigate('announcements')}
+                        style={{ padding: '5px 10px', fontSize: '0.8rem', height: 'auto' }}
+                    >
+                        Περισσότερα
+                    </button>
+                </div>
+
             </div>
 
-             {selectedAnn && (
+            {/* --- ANNOUNCEMENT MODAL --- */}
+            {selectedAnn && (
                 <div className="modal-overlay" onClick={() => setSelectedAnn(null)} style={{position:'fixed', top:0, left:0, width:'100%', height:'100%', background:'rgba(0,0,0,0.5)', display:'flex', justifyContent:'center', alignItems:'center', zIndex:1000}}>
                     <div className="modal-content" onClick={e => e.stopPropagation()} style={{background:'white', padding:30, borderRadius:12, maxWidth:600, width:'90%', position:'relative', maxHeight: '80vh', overflowY: 'auto'}}>
                         <button onClick={() => setSelectedAnn(null)} style={{position:'absolute', top:15, right:15, background:'none', border:'none', cursor:'pointer'}}><X size={24} color="#666"/></button>
                         <div style={{borderBottom:'1px solid #eee', paddingBottom:15, marginBottom:20}}>
                             <small style={{color:'#666', display:'block', marginBottom:5}}>{formatDate(selectedAnn.date)}</small>
-                            <h2 style={{margin:0, color: selectedAnn.is_important ? '#e65100' : '#002F6C', display:'flex', alignItems:'center', gap:10}}>{selectedAnn.is_important && <AlertTriangle size={24}/>}{selectedAnn.text}</h2>
-                        </div>
+<h2 style={{                    height: "100%",
+                                margin:"20px", 
+                                color: selectedAnn.is_important ? '#e65100' : '#002F6C', 
+                                display:'flex', 
+                                alignItems:'flex-start', // Top align icon with text
+                                gap:10,
+                                overflow: 'normal', // Allow wrapping
+                                lineHeight: 1.4
+                            }}>
+                                {selectedAnn.is_important && <AlertTriangle size={24} style={{flexShrink:0, marginTop: 4}}/>}
+                                {selectedAnn.text}
+                            </h2>                        </div>
                         <div style={{fontSize:'1.1rem', lineHeight:1.6, whiteSpace:'pre-wrap', color:'#333'}}>{selectedAnn.body || "Δεν υπάρχει επιπλέον κείμενο."}</div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- AGENTS MODAL --- */}
+            {showAgents && (
+                <div className="modal-overlay" onClick={() => setShowAgents(false)} style={{position:'fixed', top:0, left:0, width:'100%', height:'100%', background:'rgba(0,0,0,0.5)', display:'flex', justifyContent:'center', alignItems:'center', zIndex:1000}}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{background:'#f9fafb', padding:0, borderRadius:12, maxWidth:600, width:'90%', position:'relative', maxHeight: '85vh', overflow: 'hidden', display: 'flex', flexDirection: 'column'}}>
+                        
+                        {/* Modal Header */}
+                        <div style={{ padding: '20px', background: '#002F6C', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                            <div style={{ textAlign: 'center' }}>
+                                <h2 style={{ margin: 0, fontSize: '1.3rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+                                    <Briefcase size={20} /> Εκτελωνιστές
+                                </h2>
+                                <p style={{ margin: '5px 0 0 0', fontSize: '0.8rem', opacity: 0.8 }}>⚠️ Η σειρά εμφάνισης είναι τυχαία</p>
+                            </div>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div style={{ overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                            {agentsLoading ? (
+                                <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>Φόρτωση...</div>
+                            ) : randomAgents.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>Δεν βρέθηκαν καταχωρημένοι εκτελωνιστές.</div>
+                            ) : (
+                                randomAgents.map(agent => (
+                                    <div key={agent.id} style={{ background: 'white', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+                                        {/* Card Header (Clickable) */}
+                                        <div 
+                                            onClick={() => toggleAgent(agent.id)}
+                                            style={{ padding: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', background: expandedAgentId === agent.id ? '#f0f7ff' : 'white' }}
+                                        >
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                                                <div style={{ width: 40, height: 40, background: '#e3f2fd', color: '#1976d2', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
+                                                    {agent.surname.charAt(0)}
+                                                </div>
+                                                <div>
+                                                    <h3 style={{ margin: 0, fontSize: '1rem', color: '#333' }}>{agent.surname} {agent.name}</h3>
+                                                    <small style={{ color: '#666' }}>{agent.company}</small>
+                                                </div>
+                                            </div>
+                                            {expandedAgentId === agent.id ? <ChevronUp size={20} color="#666"/> : <ChevronDown size={20} color="#666"/>}
+                                        </div>
+
+                                        {/* Card Details (Collapsible) */}
+                                        {expandedAgentId === agent.id && (
+                                            <div style={{ padding: '0 15px 15px 15px', borderTop: '1px solid #f0f0f0', marginTop: '-1px' }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '15px' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#555', fontSize: '0.95rem' }}>
+                                                        <Phone size={16} color="#1976d2" /> {agent.phone}
+                                                    </div>
+                                                    {agent.email && (
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#555', fontSize: '0.95rem' }}>
+                                                            <Mail size={16} color="#1976d2" /> {agent.email}
+                                                        </div>
+                                                    )}
+                                                    {agent.address && (
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#555', fontSize: '0.95rem' }}>
+                                                            <MapPin size={16} color="#1976d2" /> {agent.address}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- SEAMLESS FOOTER --- */}
+            <footer style={{
+                position: 'absolute',
+                bottom: 0,
+                width: '100%',
+                textAlign: 'center',
+                padding: '15px 0',
+                background: 'transparent', // Transparent to blend in
+                color: '#888', // Slightly lighter text
+                fontSize: '0.8rem',
+                border: 'none' // No border
+            }}>
+                <span>&copy; {new Date().getFullYear()} Τελωνείο Χανίων &nbsp;|&nbsp; </span>
+                <button 
+                    onClick={() => setShowTerms(true)}
+                    style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#002F6C',
+                        textDecoration: 'none', // Removed underline for cleaner look (optional)
+                        cursor: 'pointer',
+                        fontSize: 'inherit',
+                        padding: 0,
+                        fontWeight: '500'
+                    }}
+                    onMouseEnter={e => e.target.style.textDecoration = 'underline'}
+                    onMouseLeave={e => e.target.style.textDecoration = 'none'}
+                >
+                    Όροι Χρήσης
+                </button>
+            </footer>
+
+            {/* --- TERMS OF USE MODAL --- */}
+            {showTerms && (
+                <div className="modal-overlay" onClick={() => setShowTerms(false)} style={{position:'fixed', top:0, left:0, width:'100%', height:'100%', background:'rgba(0,0,0,0.5)', display:'flex', justifyContent:'center', alignItems:'center', zIndex:2000}}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{background:'white', padding:'30px', borderRadius:12, maxWidth:500, width:'90%', position:'relative'}}>
+                        <button onClick={() => setShowTerms(false)} style={{position:'absolute', top:10, right:10, background:'none', border:'none', cursor:'pointer'}}><X size={20} color="#666"/></button>
+                        <h3 style={{marginTop:0, marginBottom:15, color:'#002F6C'}}>Όροι Χρήσης</h3>
+                        <p style={{lineHeight: 1.6, color:'#333', textAlign:'justify', fontSize:'0.95rem'}}>
+                            Η ιστοσελίδα δεν αποτελεί προϊόν ανάπτυξης από πλευράς της κεντρικής διοίκησης της ΑΑΔΕ αλλά μια προσπάθεια των υπαλλήλων του Τελωνείου Χανίων για μια βελτιωμένη εμπειρία των συναλλασομένων.
+                        </p>
                     </div>
                 </div>
             )}

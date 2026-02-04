@@ -10,6 +10,8 @@ import {
   Login
 } from './components/Layout';
 import { MFAVerify } from './components/MFAVerify'; 
+import { Profile } from './pages/Profile';
+import AgentsApp from './components/AgentsApp'; // <--- 1. NEW IMPORT
 
 // --- IMPORT APPS ---
 import { FuelApp } from './apps/FuelApp';
@@ -78,7 +80,7 @@ function App() {
                 await fetchUserProfile(currentSession);
                 setProfileLoading(false);
                 
-                // Navigate to Portal
+                // Navigate to Portal (only if not already deep linked)
                 setView(prev => {
                     if (prev === 'welcome' || prev === 'login' || prev === 'mfa_verify') return 'portal';
                     return prev;
@@ -123,6 +125,9 @@ function App() {
     const activeUser = session && userProfile ? { ...session.user, ...userProfile } : null;
 
     const handleLogout = async () => {
+        // Clear HttpOnly Cookie via Backend
+        try { await api.post('/api/auth/logout'); } catch(e) { console.error(e); }
+        // Clear LocalStorage
         await supabase.auth.signOut();
     };
 
@@ -141,7 +146,9 @@ function App() {
     };
 
     const navigate = (target) => {
-        const protectedApps = ['services_app', 'fuel_app', 'reservations', 'announcements_app', 'accounts_app', 'directory_app'];
+        // 2. ADD agents_app TO PROTECTED APPS
+        const protectedApps = ['services_app', 'fuel_app', 'reservations', 'announcements_app', 'accounts_app', 'directory_app', 'profile', 'agents_app'];
+        
         if (protectedApps.includes(target)) {
             if (activeUser) setView(target);
             else setView('login');
@@ -170,13 +177,31 @@ function App() {
             case 'mfa_verify': return <MFAVerify />; 
             
             case 'portal': 
-                return activeUser ? <HomeApp user={activeUser} onAppSelect={navigate} onLogout={handleLogout} /> : null;
+                return activeUser ? (
+                    <HomeApp 
+                        user={activeUser} 
+                        onAppSelect={navigate} 
+                        onLogout={handleLogout}
+                        onProfileClick={() => setView('profile')} 
+                    />
+                ) : null;
             
+            case 'profile': 
+                return activeUser ? (
+                    <Profile 
+                        user={activeUser} 
+                        onBack={() => setView('portal')} 
+                    /> 
+                ) : null;
+
             case 'fuel_app': return <FuelApp user={activeUser} onExit={() => setView('portal')} />;
             case 'services_app': return <ServicesApp user={activeUser} onExit={() => setView('portal')} />;
             case 'announcements_app': return <AnnouncementsApp user={activeUser} onExit={() => setView('portal')} />;
             case 'accounts_app': return <AccountManager user={activeUser} onExit={() => setView('portal')} />;
             case 'directory_app': return <DirectoryApp user={activeUser} onExit={() => setView('portal')} />;
+            
+            // 3. ADD THE CASE FOR THE NEW APP
+            case 'agents_app': return <AgentsApp user={activeUser} onExit={() => setView('portal')} />;
             
             default: return <WelcomePage onNavigate={navigate} />;
         }
@@ -186,6 +211,7 @@ function App() {
         <div className="App">
             {renderContent()}
 
+            {/* FLOATING ACTION BUTTONS */}
             <div className="fab-container">
                 <div className="split-rect-btn">
                     <button onClick={openDirectory} className="btn-half left" title="Τηλεφωνικός Κατάλογος"><Phone size={20} strokeWidth={2.5} /></button>

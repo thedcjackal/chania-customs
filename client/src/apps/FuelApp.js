@@ -57,11 +57,29 @@ const ReservationForm = ({ user, existing, onSuccess }) => {
     const [form, setForm] = useState(existing || { date: '', vessel: '', user_company: user.company || '', fuel_type: '', quantity: 0, payment_method: 'Ηλεκτρονικά', mrn: '', supply_company: '', location: {x:-1,y:-1} }); 
     const [refs, setRefs] = useState({ fuel_types: [], companies: [] }); 
     const [vesselMap, setVesselMap] = useState({}); 
-    useEffect(() => { api.get(`${API_URL}/admin/reference`).then(r => setRefs(r.data)); if (user.role !== 'user') api.get(`${API_URL}/vessel_map`).then(res => setVesselMap(res.data)); }, [user.role]); 
+    useEffect(() => { 
+        api.get(`${API_URL}/admin/reference`).then(r => setRefs(r.data)); 
+        // FIX: Replaced 'user'/'fuser' with 'fuel_user'
+        if (user.role !== 'fuel_user') api.get(`${API_URL}/vessel_map`).then(res => setVesselMap(res.data)); 
+    }, [user.role]); 
     const handleMapClick = (e) => { const rect = e.target.getBoundingClientRect(); setForm({ ...form, location: { x: ((e.clientX - rect.left)/rect.width)*100, y: ((e.clientY - rect.top)/rect.height)*100 } }); }; 
-    const submit = async () => { if (form.location.x === -1) return alert("Select location"); if (existing) { await api.put(`${API_URL}/reservations`, { id: existing.id, role: 'user', updates: form }); onSuccess(); } else { await api.post(`${API_URL}/reservations`, { ...form, user_name: user.name, user_company: (user.role !== 'user' && form.user_company) ? form.user_company : user.company }); onSuccess(); } }; 
-    const availableVessels = (user.role !== 'user' && form.user_company) ? (vesselMap[form.user_company] || []) : user.vessels; 
-    return (<div className="form-grid"><div className="form-group"><label>Ημερομηνία</label><input type="date" value={form.date} onChange={e=>setForm({...form, date:e.target.value})} disabled={!!existing}/></div>{user.role !== 'user' ? (<><div className="form-group"><label>Εταιρεία Πελάτη</label><select value={form.user_company} onChange={e=>setForm({...form, user_company:e.target.value, vessel:''})}><option value="">Επιλογή...</option>{Object.keys(vesselMap).map(c => <option key={c} value={c}>{c}</option>)}</select></div><div className="form-group"><label>Σκάφος</label><select value={form.vessel} onChange={e=>setForm({...form, vessel:e.target.value})} disabled={!form.user_company}><option value="">Επιλογή...</option>{availableVessels.map(v => <option key={v} value={v}>{v}</option>)}</select></div></>) : (<div className="form-group"><label>Σκάφος</label><select value={form.vessel} onChange={e=>setForm({...form, vessel:e.target.value})}><option>Επιλογή...</option>{user.vessels.map(v=><option key={v}>{v}</option>)}</select></div>)}<div className="form-group"><label>Καύσιμο</label><select value={form.fuel_type} onChange={e=>setForm({...form, fuel_type:e.target.value})}><option>Επιλογή...</option>{refs.fuel_types.map(f=><option key={f}>{f}</option>)}</select></div><div className="form-group"><label>Εταιρεία Εφοδ.</label><select value={form.supply_company} onChange={e=>setForm({...form, supply_company:e.target.value})}><option>Επιλογή...</option>{refs.companies.map(c=><option key={c}>{c}</option>)}</select></div><div className="form-group"><label>Τρόπος Πληρωμής</label><select value={form.payment_method} onChange={e=>setForm({...form, payment_method:e.target.value})}><option>Ηλεκτρονικά</option><option>Δια ζώσης</option><option>MRN/Αριθμός Πρωτοκόλλου</option></select></div><div className="form-group"><label>MRN/Πρωτόκολλο</label><input value={form.mrn} onChange={e=>setForm({...form, mrn:e.target.value})} /></div><div className="form-group"><label>Ποσότητα</label><input type="number" value={form.quantity} onChange={e=>setForm({...form, quantity:e.target.value})}/></div><div className="map-wrapper" style={{maxWidth: 'fit-content'}}><div className="map-container" onClick={handleMapClick}><img src="/map-chania-old-town-L.jpg" className="map-image" alt="map"/>{form.location.x > -1 && <div className="map-pin" style={{left:`${form.location.x}%`, top:`${form.location.y}%`}}/>}</div></div><div style={{gridColumn:'1/-1'}}><button onClick={submit}>{existing ? 'Save' : 'Submit'}</button></div></div>);
+    const submit = async () => { 
+        if (form.location.x === -1) return alert("Select location"); 
+        if (existing) { 
+            await api.put(`${API_URL}/reservations`, { id: existing.id, role: 'user', updates: form }); 
+            onSuccess(); 
+        } else { 
+            // FIX: Replaced 'user' with 'fuel_user' logic
+            await api.post(`${API_URL}/reservations`, { ...form, user_name: user.name, user_company: (user.role !== 'fuel_user' && form.user_company) ? form.user_company : user.company }); 
+            onSuccess(); 
+        } 
+    }; 
+    // FIX: Replaced 'fuser'/'user' with 'fuel_user'
+    const availableVessels = (user.role !== 'fuel_user' && form.user_company) ? (vesselMap[form.user_company] || []) : user.vessels; 
+    return (<div className="form-grid"><div className="form-group"><label>Ημερομηνία</label><input type="date" value={form.date} onChange={e=>setForm({...form, date:e.target.value})} disabled={!!existing}/></div>
+    {/* FIX: Correct logic for displaying company dropdown vs vessel dropdown */}
+    {user.role !== 'fuel_user' ? (<><div className="form-group"><label>Εταιρεία Πελάτη</label><select value={form.user_company} onChange={e=>setForm({...form, user_company:e.target.value, vessel:''})}><option value="">Επιλογή...</option>{Object.keys(vesselMap).map(c => <option key={c} value={c}>{c}</option>)}</select></div><div className="form-group"><label>Σκάφος</label><select value={form.vessel} onChange={e=>setForm({...form, vessel:e.target.value})} disabled={!form.user_company}><option value="">Επιλογή...</option>{availableVessels.map(v => <option key={v} value={v}>{v}</option>)}</select></div></>) : (<div className="form-group"><label>Σκάφος</label><select value={form.vessel} onChange={e=>setForm({...form, vessel:e.target.value})}><option>Επιλογή...</option>{user.vessels.map(v=><option key={v}>{v}</option>)}</select></div>)}
+    <div className="form-group"><label>Καύσιμο</label><select value={form.fuel_type} onChange={e=>setForm({...form, fuel_type:e.target.value})}><option>Επιλογή...</option>{refs.fuel_types.map(f=><option key={f}>{f}</option>)}</select></div><div className="form-group"><label>Εταιρεία Εφοδ.</label><select value={form.supply_company} onChange={e=>setForm({...form, supply_company:e.target.value})}><option>Επιλογή...</option>{refs.companies.map(c=><option key={c}>{c}</option>)}</select></div><div className="form-group"><label>Τρόπος Πληρωμής</label><select value={form.payment_method} onChange={e=>setForm({...form, payment_method:e.target.value})}><option>Ηλεκτρονικά</option><option>Δια ζώσης</option><option>MRN/Αριθμός Πρωτοκόλλου</option></select></div><div className="form-group"><label>MRN/Πρωτόκολλο</label><input value={form.mrn} onChange={e=>setForm({...form, mrn:e.target.value})} /></div><div className="form-group"><label>Ποσότητα</label><input type="number" value={form.quantity} onChange={e=>setForm({...form, quantity:e.target.value})}/></div><div className="map-wrapper" style={{maxWidth: 'fit-content'}}><div className="map-container" onClick={handleMapClick}><img src="/map-chania-old-town-L.jpg" className="map-image" alt="map"/>{form.location.x > -1 && <div className="map-pin" style={{left:`${form.location.x}%`, top:`${form.location.y}%`}}/>}</div></div><div style={{gridColumn:'1/-1'}}><button onClick={submit}>{existing ? 'Save' : 'Submit'}</button></div></div>);
 };
 
 const UserDashboard = ({ user }) => {
@@ -78,7 +96,8 @@ const UserDashboard = ({ user }) => {
     useEffect(() => { load(); }, [load]); 
 
     const updateUserVessels = (newVessels) => { user.vessels = newVessels; }; 
-    const del = async (r) => { if(window.confirm("Delete?")) { try { await api.delete(`${API_URL}/reservations?id=${r.id}&role=user`); load(); } catch(e) { alert("Error"); } } }; 
+    // FIX: Replaced 'role=user' with 'role=fuel_user'
+    const del = async (r) => { if(window.confirm("Delete?")) { try { await api.delete(`${API_URL}/reservations?id=${r.id}&role=fuel_user`); load(); } catch(e) { alert("Error"); } } }; 
     return (<div className="user-dash"><div className="dash-header"><button className={view==='list'?'active':''} onClick={()=>{setEditItem(null); setView('list');}}>Λίστα</button><button className={view==='new'?'active':''} onClick={()=>{setEditItem(null); setView('new');}}>Νέα Κράτηση</button><button className={view==='vessels'?'active':''} onClick={()=>setView('vessels')}>Σκάφη</button></div>{view === 'list' && (<table><thead><tr><th>Ημερομηνία</th><th>Σκάφος</th><th>Κατάσταση</th><th>Ενέργειες</th></tr></thead><tbody>{list.map(r => (<tr key={r.id}><td>{formatDate(r.date)}</td><td>{r.vessel}</td><td>{r.status}</td><td><button onClick={()=>{setEditItem(r); setView('new');}}>Edit</button><button className="danger" onClick={()=>del(r)}>Del</button></td></tr>))}</tbody></table>)}{view === 'new' && <ReservationForm user={user} existing={editItem} onSuccess={()=>{setView('list'); load();}} />}{view === 'vessels' && <VesselManager user={user} onUpdate={updateUserVessels} />}</div>);
 };
 
@@ -87,16 +106,22 @@ const VesselManager = ({ user, onUpdate }) => {const [newVessel, setNewVessel] =
 // ================= 3. EXPORT =================
 export const FuelApp = ({ user, onExit }) => {
     const [tab, setTab] = useState('overview');
+    
+    // UPDATED CHECK: Allow root_admin, admin, and staff
+    const isAdminOrStaff = ['admin', 'root_admin', 'staff'].includes(user.role);
+    // UPDATED CHECK: Full admin privileges
+    const isAdmin = ['admin', 'root_admin'].includes(user.role);
+
     return (
         <div className="app-shell">
             <AppHeader title="Εφοδιασμοί" user={user} onExit={onExit} icon={<img src="/ship-icon.png" style={{height:30}} alt=""/>} />
-            {user.role === 'admin' || user.role === 'staff' ? (
+            {isAdminOrStaff ? (
                 <>
                     <div className="tabs">
                         <button className={tab==='overview'?'active':''} onClick={()=>setTab('overview')}>Πρόγραμμα</button>
                         <button className={tab==='debts'?'active':''} onClick={()=>setTab('debts')}>Οφειλές</button>
                         <button className={tab==='new_res'?'active':''} onClick={()=>setTab('new_res')}>Νέος Εφοδιασμός</button>
-                        {user.role === 'admin' && (
+                        {isAdmin && (
                             <>
                                 <button className={tab==='users'?'active':''} onClick={()=>setTab('users')}>Χρήστες</button>
                                 <button className={tab==='comps'?'active':''} onClick={()=>setTab('comps')}>Εταιρείες</button>
@@ -108,7 +133,7 @@ export const FuelApp = ({ user, onExit }) => {
                     {tab === 'overview' && <DailyReport user={user} />}
                     {tab === 'debts' && <DebtReport />}
                     {tab === 'new_res' && <ReservationForm user={user} onSuccess={() => setTab('overview')} />}
-                    {user.role === 'admin' && (
+                    {isAdmin && (
                         <>
                             {tab === 'users' && <UserManager user={user} />}
                             {tab === 'comps' && <ReferenceManager type="companies" title="Εταιρείες" placeholder="Νέα Εταιρεία" />}

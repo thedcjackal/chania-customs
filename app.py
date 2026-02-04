@@ -8,8 +8,8 @@ import random
 import psycopg2
 import traceback
 import re
+import logging
 from flask import Flask, request, jsonify, g, make_response
-# 1. IMPORT FLASK-CORS
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -18,25 +18,38 @@ from psycopg2.extras import RealDictCursor, Json
 from supabase import create_client, Client
 from functools import wraps
 
+# ==========================================
+# 0. LOGGING CONFIGURATION (SECURE)
+# ==========================================
+class SensitiveDataFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        msg = re.sub(r'(Bearer\s+)([a-zA-Z0-9\-\._~+/]+=*)', r'\1[REDACTED_TOKEN]', msg)
+        msg = re.sub(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)', r'[REDACTED_EMAIL]', msg)
+        msg = re.sub(r"('password':\s*')[^']+'", r"\1[REDACTED]'", msg)
+        record.msg = msg
+        return True
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("customs_api")
+logger.addFilter(SensitiveDataFilter())
+
 try:
     from dateutil.relativedelta import relativedelta
 except ImportError:
-    print("CRITICAL: 'python-dateutil' is missing. Run: pip install python-dateutil")
+    logger.critical("CRITICAL: 'python-dateutil' is missing. Run: pip install python-dateutil")
     exit(1)
 
 app = Flask(__name__)
 
 # ==========================================
-# 0. SECURITY & CONFIGURATION
+# 1. SECURITY & CONFIGURATION
 # ==========================================
 ALLOWED_ORIGINS = [
     "http://localhost:3000",                  
     "https://customs-client.vercel.app"       
 ]
 
-# --- STEP 1: CONFIGURE CORS (MUST BE FIRST) ---
-# We use the library because it handles the complex Preflight logic reliably.
-# 'supports_credentials=True' is CRITICAL for cookies.
 CORS(app, 
      resources={r"/*": {"origins": ALLOWED_ORIGINS}}, 
      supports_credentials=True,
@@ -44,42 +57,40 @@ CORS(app,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
 
-# --- STEP 2: CONFIGURE LIMITER ---
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=["200 per day", "50 per hour"],
+    default_limits=["2000 per day", "500 per hour"],
     storage_uri="memory://" 
 )
 
-# --- STEP 3: EXEMPT PREFLIGHT FROM LIMITER ---
-# This ensures Limiter doesn't block the browser's security check.
 @limiter.request_filter
 def ignore_options():
     return request.method == 'OPTIONS'
 
 # ==========================================
-# 1. SUPABASE SETUP
+# 2. SUPABASE SETUP
 # ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# IMPORTANT: For admin.create_user to work, this should ideally be the SERVICE_ROLE key.
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") 
 
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     except Exception as e:
-        print(f"⚠️ Supabase Init Failed: {e}")
+        logger.warning(f"Supabase Init Failed: {e}")
 else:
-    print("⚠️ WARNING: SUPABASE_URL or SUPABASE_KEY missing in .env")
+    logger.warning("SUPABASE_URL or SUPABASE_KEY missing in .env")
 
 # ==========================================
-# 2. DATABASE CONNECTION
+# 3. DATABASE CONNECTION
 # ==========================================
 def get_db():
     url = os.environ.get('DATABASE_URL')
     if not url:
-        print("❌ ERROR: DATABASE_URL environment variable is MISSING.")
+        logger.error("DATABASE_URL environment variable is MISSING.")
         return None
     
     if url.startswith("postgres://"):
@@ -92,25 +103,19 @@ def get_db():
     try:
         return psycopg2.connect(url)
     except Exception as e:
-        print(f"❌ DB Connection Failed: {e}")
+        logger.error(f"DB Connection Failed: {e}")
         return None
 
 # ==========================================
-# 3. AUTHENTICATION MIDDLEWARE
+# 4. AUTHENTICATION MIDDLEWARE
 # ==========================================
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # NOTE: CORS is now handled entirely by Flask-CORS. 
-        # We focus purely on token verification here.
-
         token = None
-        
-        # 1. PRIORITY: Check HttpOnly Cookie
         if 'access_token' in request.cookies:
             token = request.cookies.get('access_token')
         
-        # 2. FALLBACK: Check Authorization Header
         if not token:
             auth_header = request.headers.get('Authorization')
             if auth_header and "Bearer" in auth_header:
@@ -123,20 +128,34 @@ def require_auth(f):
              return jsonify({"error": "Server Config Error"}), 500
 
         try:
-            # 3. Verify Token
             user_response = supabase.auth.get_user(token)
             g.auth_id = user_response.user.id
+            # Fetch current user role for RBAC in routes
+            conn = get_db()
+            if conn:
+                try:
+                    cur = conn.cursor(cursor_factory=RealDictCursor)
+                    cur.execute("SELECT role FROM users WHERE auth_id = %s", (g.auth_id,))
+                    u_data = cur.fetchone()
+                    g.current_user_role = u_data['role'] if u_data else 'user'
+                finally:
+                    conn.close()
+            else:
+                g.current_user_role = 'user'
+
         except Exception as e:
-            # If cookie is invalid, attempt to clear it
+            logger.warning(f"Auth verification failed: {e}")
             resp = make_response(jsonify({"error": "Session Expired"}))
             resp.set_cookie('access_token', '', expires=0, samesite='None', secure=True)
             return resp, 401
 
-        return f(*args, **kwargs)
+        # Pass current_user dict to the route if needed, otherwise just proceed
+        # We simulate a current_user object for the route signature
+        return f(current_user={'role': g.current_user_role, 'auth_id': g.auth_id}, *args, **kwargs)
     return decorated
 
 # ==========================================
-# 4. SHARED HELPER FUNCTIONS
+# 5. SHARED HELPER FUNCTIONS
 # ==========================================
 def validate_input(data, required_fields):
     if not data: return False, "No data provided"
@@ -186,7 +205,7 @@ def is_scoreable_day(d_date, special_dates_set):
     return False
 
 # ==========================================
-# 5. BUSINESS LOGIC
+# 6. BUSINESS LOGIC
 # ==========================================
 def calculate_db_balance(start_str=None, end_str=None):
     conn = get_db()
@@ -293,7 +312,7 @@ def load_state_for_scheduler(start_date=None):
             cur.execute("SELECT user_id FROM user_preferences WHERE month_str = %s AND prefer_double_sk = true", (m_str,))
             rows = cur.fetchall()
             for r in rows: preferences[int(r['user_id'])] = True
-    except Exception as e: print(f"Error loading preferences: {e}")
+    except Exception as e: logger.warning(f"Error loading preferences: {e}")
     conn.close()
     rot_q = state['rotation_queues'] if state and state['rotation_queues'] else {}
     next_q = state['next_round_queues'] if state and state['next_round_queues'] else {}
@@ -418,14 +437,14 @@ def run_auto_scheduler_logic(db, start_date, end_date):
     return schedule, {"rotation_queues": rot_q, "next_round_queues": nxt_q, "logs": logs}
 
 # ==========================================
-# 6. API ROUTES (ALL PREFIXED WITH /api)
+# 7. API ROUTES
 # ==========================================
 @app.errorhandler(429)
 def ratelimit_handler(e):
     return jsonify(error="ratelimit_exceeded", message="Too many requests. Please try again later."), 429
 
 @app.route('/')
-@limiter.limit("10 per minute")
+@limiter.limit("60 per minute")
 def home():
     return "Customs API is Secure & Running!"
 
@@ -464,6 +483,7 @@ def set_session():
         )
         return resp
     except Exception as e:
+        logger.warning(f"Session set failed: {e}")
         return jsonify({"error": "Invalid Token"}), 401
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -474,9 +494,9 @@ def logout_session():
 
 # --- LOGIN HANDSHAKE ---
 @app.route('/api/auth/exchange', methods=['GET'])
-@limiter.limit("5 per minute")
+@limiter.limit("10 per minute")
 @require_auth
-def auth_exchange():
+def auth_exchange(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -484,7 +504,7 @@ def auth_exchange():
         cur.execute("SELECT * FROM users WHERE auth_id = %s", (g.auth_id,))
         user = cur.fetchone()
         if user:
-            user.pop('password', None)
+            # user.pop('password', None) # Column does not exist anymore
             return jsonify(user)
         else:
             return jsonify({"error": "User profile not linked. Please contact admin."}), 404
@@ -493,7 +513,7 @@ def auth_exchange():
 
 # --- ANNOUNCEMENTS ---
 @app.route('/api/announcements', methods=['GET', 'POST', 'DELETE', 'PUT'])
-@limiter.limit("10 per minute")
+@limiter.limit("60 per minute")
 def announcements():
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
@@ -503,7 +523,8 @@ def announcements():
         try:
             cur.execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS body TEXT")
             cur.execute("ALTER TABLE announcements ADD COLUMN IF NOT EXISTS is_important BOOLEAN DEFAULT FALSE")
-        except: pass
+        except: 
+            conn.rollback() 
         conn.commit()
 
         if request.method == 'GET':
@@ -557,62 +578,151 @@ def announcements():
     finally:
         conn.close()
 
-# --- ADMIN ROUTES ---
+# --- ADMIN ROUTES (USER MANAGEMENT UPDATED) ---
 @app.route('/api/admin/users', methods=['GET', 'POST', 'PUT', 'DELETE'])
-@limiter.limit("5 per minute")
+@limiter.limit("30 per minute")
 @require_auth
-def manage_users():
+def manage_users(current_user): 
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
+    
     try:
+        # --- GET: List Users ---
         if request.method == 'GET':
             cur.execute("SELECT * FROM users ORDER BY id")
             users = cur.fetchall()
-            for u in users: u.pop('password', None)
+            # No password to pop anymore
             return jsonify(users)
+
+        # --- POST: Create User (Supabase + DB) ---
         if request.method == 'POST':
             u = request.json
+            username_to_save = u.get('email') or u.get('username')
+            password = u.get('password')
+
+            # Validation
             is_valid, error = validate_input(u, {
-                'username': {'type': str, 'max_length': 50},
                 'role': {'type': str, 'optional': True},
                 'name': {'type': str, 'max_length': 100},
                 'surname': {'type': str, 'max_length': 100}
             })
             if not is_valid: return jsonify({"error": error}), 400
-            cur.execute("""
-                INSERT INTO users (username, password, role, name, surname, company, vessels, allowed_apps)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """, (u.get('username'), 'SupabaseAuth', u.get('role','user'), u.get('name',''), u.get('surname',''), u.get('company',''), u.get('vessels',[]), u.get('allowed_apps',[])))
-            conn.commit()
-            return jsonify({"success":True})
+            if not username_to_save: return jsonify({"error": "Email/Username is required"}), 400
+            if not password: return jsonify({"error": "Password is required"}), 400
+
+            # 1. Create User in Supabase Auth (Needs Service Role Key)
+            new_auth_id = None
+            try:
+                # Use admin.create_user to avoid signing in the current session
+                # confirm=True skips email verification if enabled
+                user_attributes = {
+                    "email": username_to_save,
+                    "password": password,
+                    "email_confirm": True
+                }
+                sb_res = supabase.auth.admin.create_user(user_attributes)
+                new_auth_id = sb_res.user.id
+            except Exception as e:
+                logger.error(f"Supabase Create User Failed: {e}")
+                return jsonify({"error": f"Failed to create auth user: {str(e)}"}), 400
+
+            # 2. Insert Profile into Database
+            try:
+                cur.execute("""
+                    INSERT INTO users (auth_id, username, role, name, surname, company, vessels, allowed_apps)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """, (
+                    new_auth_id,
+                    username_to_save,
+                    u.get('role', 'user'), 
+                    u.get('name', ''), 
+                    u.get('surname', ''), 
+                    u.get('company', ''), 
+                    u.get('vessels', []), 
+                    u.get('allowed_apps', [])
+                ))
+                conn.commit()
+            except Exception as e:
+                # If DB insert fails, try to cleanup Supabase user to keep sync
+                try:
+                    supabase.auth.admin.delete_user(new_auth_id)
+                except: pass
+                raise e
+
+            return jsonify({"success": True})
+
+        # --- PUT: Update User ---
         if request.method == 'PUT':
             u = request.json
-            is_valid, error = validate_input(u, {
-                'id': {'type': int},
-                'username': {'type': str, 'max_length': 50},
-                'name': {'type': str, 'max_length': 100},
-                'surname': {'type': str, 'max_length': 100}
-            })
-            if not is_valid: return jsonify({"error": error}), 400
+            user_id = u.get('id')
+
+            if not user_id: return jsonify({"error": "User ID required"}), 400
+
+            # 1. Check existing user
+            cur.execute("SELECT role FROM users WHERE id = %s", (user_id,))
+            existing_user = cur.fetchone()
+            
+            if not existing_user: return jsonify({"error": "User not found"}), 404
+
+            # 2. Role Change Security Check
+            new_role = u.get('role')
+            current_role_in_db = existing_user['role']
+
+            if new_role and new_role != current_role_in_db:
+                if current_user.get('role') != 'root_admin':
+                    return jsonify({"error": "Security violation: Only Root Admins can change roles"}), 403
+
+            # 3. Update DB (Profile only)
             cur.execute("""
-                UPDATE users SET username=%s, role=%s, name=%s, surname=%s, company=%s, vessels=%s, allowed_apps=%s
+                UPDATE users 
+                SET role=%s, name=%s, surname=%s, company=%s, vessels=%s, allowed_apps=%s
                 WHERE id=%s
-            """, (u.get('username'), u.get('role','user'), u.get('name',''), u.get('surname',''), u.get('company',''), u.get('vessels',[]), u.get('allowed_apps',[]), u.get('id')))
+            """, (
+                u.get('role', current_role_in_db), 
+                u.get('name', ''), 
+                u.get('surname', ''), 
+                u.get('company', ''), 
+                u.get('vessels', []), 
+                u.get('allowed_apps', []), 
+                user_id
+            ))
             conn.commit()
-            return jsonify({"success":True})
+            return jsonify({"success": True})
+
+        # --- DELETE: Delete User (Supabase + DB) ---
         if request.method == 'DELETE':
-            cur.execute("DELETE FROM users WHERE id=%s", (request.args.get('id'),))
+            user_id_to_delete = request.args.get('id')
+            
+            if current_user.get('role') not in ['admin', 'root_admin']:
+                 return jsonify({"error": "Unauthorized"}), 403
+
+            # 1. Get Auth ID
+            cur.execute("SELECT auth_id FROM users WHERE id=%s", (user_id_to_delete,))
+            target = cur.fetchone()
+
+            # 2. Delete from Supabase Auth
+            if target and target.get('auth_id'):
+                try:
+                    supabase.auth.admin.delete_user(target['auth_id'])
+                except Exception as e:
+                    logger.warning(f"Supabase delete failed (orphan might exist): {e}")
+
+            # 3. Delete from DB
+            cur.execute("DELETE FROM users WHERE id=%s", (user_id_to_delete,))
             conn.commit()
-            return jsonify({"success":True})
+            return jsonify({"success": True})
+
     except Exception as e:
-        conn.rollback(); return jsonify({"error": str(e)}), 500
+        conn.rollback()
+        logger.error(f"User management error: {e}")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
 @app.route('/api/admin/employees', methods=['GET', 'PUT'])
 @require_auth
-def manage_employees():
+def manage_employees(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -631,13 +741,14 @@ def manage_employees():
             return jsonify({"error": "Invalid data"}), 400
     except Exception as e:
         conn.rollback()
+        logger.error(f"Employee management error: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
 @app.route('/api/services/schedule', methods=['GET', 'POST'])
 @require_auth
-def schedule_route():
+def schedule_route(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -671,7 +782,7 @@ def schedule_route():
 
 @app.route('/api/services/run_scheduler', methods=['POST'])
 @require_auth
-def run_scheduler_route():
+def run_scheduler_route(current_user):
     try:
         req = request.json
         is_valid, error = validate_input(req, {
@@ -682,19 +793,18 @@ def run_scheduler_route():
         try:
             start_date = dt.strptime(req['start'] + '-01', '%Y-%m-%d').date()
         except:
-             return jsonify({"error": "Date Parsing Error"}), 400
+            return jsonify({"error": "Date Parsing Error"}), 400
         db = load_state_for_scheduler(start_date)
         if not db: return jsonify({"error": "DB Load Failed"}), 500
         end_date_month = dt.strptime(req['end'] + '-01', '%Y-%m-%d')
         end_date = (end_date_month + relativedelta(months=1) - timedelta(days=1)).date()
     except Exception as e:
-        print(traceback.format_exc())
+        logger.error("Date Parsing Error", exc_info=True)
         return jsonify({"error": "Date Parsing Error", "details": str(e)}), 400
     try:
         new_schedule, res_meta = run_auto_scheduler_logic(db, start_date, end_date)
     except Exception as e:
-        print("CRASH IN SCHEDULER LOGIC:")
-        print(traceback.format_exc())
+        logger.error("Scheduler Logic Crash", exc_info=True)
         return jsonify({"error": "Scheduler Algorithm Crash", "details": str(e)}), 500
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
@@ -715,7 +825,7 @@ def run_scheduler_route():
         conn.commit()
     except Exception as e:
         conn.rollback()
-        print(traceback.format_exc())
+        logger.error("DB Save Error in Scheduler", exc_info=True)
         return jsonify({"error": "DB Save Error", "details": str(e)}), 500
     finally:
         conn.close()
@@ -723,14 +833,14 @@ def run_scheduler_route():
 
 @app.route('/api/services/balance', methods=['GET'])
 @require_auth
-def get_balance():
+def get_balance(current_user):
     start_str = request.args.get('start')
     end_str = request.args.get('end')
     return jsonify(calculate_db_balance(start_str, end_str))
 
 @app.route('/api/services/unavailability', methods=['GET', 'POST', 'DELETE'])
 @require_auth
-def s_unavail():
+def s_unavail(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -761,7 +871,7 @@ def s_unavail():
 
 @app.route('/api/services/preferences', methods=['GET', 'POST'])
 @require_auth
-def s_prefs():
+def s_prefs(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -795,7 +905,7 @@ def s_prefs():
 
 @app.route('/api/services/clear_schedule', methods=['POST'])
 @require_auth
-def clear_schedule():
+def clear_schedule(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor()
@@ -816,7 +926,7 @@ def clear_schedule():
 
 @app.route('/api/reservations', methods=['GET', 'POST', 'PUT', 'DELETE'])
 @require_auth
-def reservations():
+def reservations(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -883,7 +993,7 @@ def reservations():
 
 @app.route('/api/daily_status', methods=['GET','POST'])
 @require_auth
-def daily_status():
+def daily_status(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -909,7 +1019,7 @@ def daily_status():
 
 @app.route('/api/admin/settings', methods=['GET', 'POST'])
 @require_auth
-def settings():
+def settings(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -937,7 +1047,7 @@ def settings():
 
 @app.route('/api/admin/schedule_metadata', methods=['GET', 'POST'])
 @require_auth
-def schedule_metadata():
+def schedule_metadata(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -969,7 +1079,7 @@ def schedule_metadata():
 
 @app.route('/api/admin/reference', methods=['GET', 'POST', 'PUT', 'DELETE'])
 @require_auth
-def reference():
+def reference(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1002,7 +1112,7 @@ def reference():
 
 @app.route('/api/admin/services/config', methods=['GET', 'POST'])
 @require_auth
-def config_route():
+def config_route(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1049,7 +1159,7 @@ def config_route():
 
 @app.route('/api/admin/special_dates', methods=['GET', 'POST', 'DELETE'])
 @require_auth
-def special_dates_route():
+def special_dates_route(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1104,7 +1214,7 @@ def get_directory():
 
 @app.route('/api/directory/departments', methods=['POST', 'PUT', 'DELETE'])
 @require_auth
-def manage_departments():
+def manage_departments(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1136,13 +1246,14 @@ def manage_departments():
             return jsonify({"success": True})
     except Exception as e:
         conn.rollback()
+        logger.error(f"Error managing departments: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
 @app.route('/api/directory/phones', methods=['POST', 'PUT', 'DELETE'])
 @require_auth
-def manage_phones():
+def manage_phones(current_user):
     conn = get_db()
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1175,6 +1286,7 @@ def manage_phones():
             return jsonify({"success": True})
     except Exception as e:
         conn.rollback()
+        logger.error(f"Error managing phones: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
@@ -1184,7 +1296,12 @@ def add_security_headers(response):
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://customs-api.fly.dev https://*.supabase.co"
+    
+    # ------------------ CRITICAL CSP UPDATE ------------------
+    # ADDED http://localhost:5000 and http://127.0.0.1:5000 to allow local API access
+    response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://localhost:5000 http://127.0.0.1:5000 https://customs-api.fly.dev https://*.supabase.co"
+    # ---------------------------------------------------------
+    
     return response
 
 if __name__ == '__main__':
