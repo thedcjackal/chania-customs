@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabase'; 
-import { Plus, Trash2, Edit2, Save, X, Search, Briefcase, Loader2, Phone, Mail, MapPin } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, Search, Loader2, Phone, Mail, MapPin } from 'lucide-react';
 
 const AgentsApp = ({ onExit }) => {
   const [agents, setAgents] = useState([]);

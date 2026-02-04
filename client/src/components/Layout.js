@@ -10,8 +10,7 @@ import {
   Mail, 
   MapPin, 
   ChevronDown, 
-  ChevronUp,
-  User
+  ChevronUp
 } from 'lucide-react';
 
 // --- SHARED HELPERS ---
