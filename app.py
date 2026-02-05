@@ -259,7 +259,6 @@ def calculate_db_balance(start_str=None, end_str=None):
     except: pass
     conn.close()
     
-    # 1. Determine Date Range
     if start_str and end_str:
         view_start = dt.strptime(start_str, '%Y-%m').date().replace(day=1)
         end_dt = dt.strptime(end_str, '%Y-%m').date()
@@ -267,7 +266,6 @@ def calculate_db_balance(start_str=None, end_str=None):
     else:
         view_start = dt.min.date(); view_end = dt.max.date()
 
-    # 2. Initialize Stats
     stats = {
         e['id']: {
             'name': e['name'], 
@@ -280,13 +278,11 @@ def calculate_db_balance(start_str=None, end_str=None):
         for e in employees
     }
     
-    # --- STEP A: APPLY BASE HANDICAPS (Static Offset) ---
-    # This matches the scheduler's logic: Handicaps are added even if no shifts are worked.
+    # --- STEP A: APPLY BASE HANDICAPS ---
     for e in employees:
         eid_str = str(e['id'])
         for d in duties:
-            if d.get('is_off_balance'): continue # Don't apply handicap if duty is off-balance
-            
+            if d.get('is_off_balance'): continue 
             for conf in d.get('shift_config', []):
                 val = int(conf.get('handicaps', {}).get(eid_str, 0))
                 if val > 0:
@@ -309,7 +305,7 @@ def calculate_db_balance(start_str=None, end_str=None):
 
             # --- LOGIC A: WEEKLY DUTIES ---
             if duty.get('is_weekly'):
-                # 1. Update Counter (Count unique weeks for display)
+                # 1. Count Weeks (Visual)
                 iso_year, iso_week, _ = s_date.isocalendar()
                 week_key = f"{duty['id']}_{iso_year}_{iso_week}"
                 
@@ -317,33 +313,25 @@ def calculate_db_balance(start_str=None, end_str=None):
                     stats[eid]['duty_counts'][duty['id']] += 1
                     stats[eid]['_seen_weeks'].add(week_key)
 
-                # 2. Update Score (Only on Scoreable Days: Sat/Sun/Special)
+                # 2. Score Points (Strictly Weekends/Holidays)
                 if not duty.get('is_off_balance'):
                     if is_scoreable_day(s_date, special_dates_set):
                         stats[eid]['total'] += 1
                         stats[eid]['effective_total'] += 1
                 
-                continue # Done with Weekly
+                continue 
 
             # --- LOGIC B: DAILY DUTIES ---
-            
-            # Counter
             stats[eid]['duty_counts'][duty['id']] += 1
             
-            # Checks for Score
-            if duty.get('is_off_balance'): 
-                continue
+            if duty.get('is_off_balance'): continue
             
-            # Protected Default Logic: Don't score M-F for default owner
             if conf.get('is_within_hours') and conf.get('default_employee_id') == eid:
-                if not is_scoreable_day(s_date, special_dates_set):
-                    continue
+                if not is_scoreable_day(s_date, special_dates_set): continue
 
-            # Add Score
             stats[eid]['total'] += 1
             stats[eid]['effective_total'] += 1 
             
-            # SK Score (Weekends for Daily only)
             if not duty.get('is_special') and s_date.weekday() in [5,6]:
                 stats[eid]['sk_score'] += 1
 
@@ -355,8 +343,10 @@ def calculate_db_balance(start_str=None, end_str=None):
         del s['_seen_weeks']
         final_stats.append(s)
 
-    return final_stats# ==========================================
-# 6. SCHEDULER ALGORITHM (FULL)
+    return final_stats
+
+# ==========================================
+# 6. SCHEDULER ALGORITHM (TRANSLATED & CLEAN LOGS)
 # ==========================================
 def run_auto_scheduler_logic(db, start_date, end_date):
     logs = []
@@ -370,10 +360,10 @@ def run_auto_scheduler_logic(db, start_date, end_date):
     double_duty_prefs = db.get('preferences', {})
     
     if not employees:
-        log("❌ CRITICAL: No employees found.")
+        log("❌ ΣΦΑΛΜΑ: Δεν βρέθηκαν υπάλληλοι.")
         return [], {"rotation_queues": {}, "next_round_queues": {}, "logs": logs}
     
-    log(f"🏁 Starting Scheduler for {start_date.strftime('%Y-%m')}")
+    log(f"🏁 Εκκίνηση Χρονοπρογραμματιστή για {start_date.strftime('%Y-%m')}")
     
     duties = db['service_config']['duties']
     special_dates_set = set(db['service_config'].get('special_dates', []))
@@ -392,7 +382,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 history.append(s)
         except: pass
         
-    log(f"🔒 Kept {locked_count} manually locked shifts.")
+    log(f"🔒 Διατηρήθηκαν {locked_count} κλειδωμένες βάρδιες.")
 
     unavail_map = {(int(u['employee_id']), str(u['date'])) for u in db['unavailability']}
     rot_q = db['service_config']['rotation_queues']
@@ -409,8 +399,8 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         prev_str = (check_date - timedelta(days=1)).strftime('%Y-%m-%d')
         for s in current_schedule + history:
             if int(s['employee_id']) == eid:
-                if s['date'] == d_str: return "Busy Today"
-                if not ignore_yesterday and s['date'] == prev_str: return "Worked Yesterday"
+                if s['date'] == d_str: return "Εργάζεται"
+                if not ignore_yesterday and s['date'] == prev_str: return "Εργάστηκε Χθες"
         return False
 
     def get_q(key, excluded_ids=[]):
@@ -460,11 +450,11 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                     if (cand, d_str) not in unavail_map and not is_user_busy(cand, curr, schedule, False): chosen_id = cand; break
                 if chosen_id: rotate_assigned_user(f"cover_{duty['id']}_{sh_idx}", chosen_id)
             if chosen_id: schedule.append({"date": d_str, "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen_id, "manually_locked": False})
-            else: log(f"⚠️ {d_str} {duty['name']}: No employee found.")
+            else: log(f"⚠️ {d_str} {duty['name']}: Δεν βρέθηκε διαθέσιμος υπάλληλος (Ωράριο).")
         curr += timedelta(days=1)
 
-    # --- PHASE 1: Weekly (Previous Month Continuity) ---
-    log("▶️ Assigning Weekly Duties...")
+    # --- PHASE 1: Weekly ---
+    log("▶️ Φάση 1: Ανάθεση Εβδομαδιαίων Υπηρεσιών...")
     for duty in [d for d in duties if d.get('is_weekly') and not d.get('is_special')]:
         for sh_idx in range(duty['shifts_per_day']):
             if duty['shift_config'][sh_idx].get('is_within_hours'): continue
@@ -474,26 +464,20 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 w_start = curr - timedelta(days=curr.weekday()); w_end = w_start + timedelta(days=6)
                 chosen = None
 
-                # 1. CHECK CONTINUITY FROM PREVIOUS MONTH
                 if w_start < start_date:
-                    # Previous day was in the previous month
                     prev_day = start_date - timedelta(days=1)
                     p_str = prev_day.strftime('%Y-%m-%d')
-                    # Look in the full raw history/schedule for who worked yesterday
                     for h in db['schedule']: 
                         if h['date'] == p_str and int(h['duty_id']) == int(duty['id']) and int(h.get('shift_index',0)) == sh_idx:
                             chosen = int(h['employee_id'])
-                            log(f"   ↪️ Continuing {duty['name']} for {emp_map.get(chosen, chosen)} (from prev month)")
                             break
                 
-                # 2. ROTATION IF NO CONTINUITY
                 if not chosen:
                     cq, nq = get_q(q_key, excl)
                     for cand in (cq+nq):
                         if (cand, curr.strftime('%Y-%m-%d')) not in unavail_map: chosen = cand; break
                     if chosen: rotate_assigned_user(q_key, chosen)
 
-                # 3. FILL THE WEEK
                 if chosen:
                     t = curr
                     while t <= w_end and t <= end_date:
@@ -501,10 +485,12 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                             if not any(s['date']==t.strftime('%Y-%m-%d') and int(s['duty_id'])==int(duty['id']) and int(s['shift_index'])==sh_idx for s in schedule):
                                 schedule.append({"date": t.strftime('%Y-%m-%d'), "duty_id": duty['id'], "shift_index": sh_idx, "employee_id": chosen, "manually_locked": False})
                         t += timedelta(days=1)
+                else:
+                    log(f"⚠️ {curr.strftime('%Y-%m-%d')} {duty['name']}: Δεν βρέθηκε διαθέσιμος υπάλληλος για εβδομαδιαία.")
                 curr = w_end + timedelta(days=1)
 
     # --- PHASE 2: Daily ---
-    log("▶️ Assigning Daily Duties...")
+    log("▶️ Φάση 2: Ανάθεση Καθημερινών Υπηρεσιών...")
     curr = start_date
     while curr <= end_date:
         d_str = curr.strftime('%Y-%m-%d')
@@ -524,7 +510,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             if chosen:
                 rotate_assigned_user(f"normal_{x['d']['id']}_sh_{x['i']}", chosen)
                 schedule.append({"date": d_str, "duty_id": x['d']['id'], "shift_index": x['i'], "employee_id": chosen, "manually_locked": False})
-            else: log(f"⚠️ {d_str} {x['d']['name']}: No employee found.")
+            else: log(f"⚠️ {d_str} {x['d']['name']}: Δεν βρέθηκε διαθέσιμος υπάλληλος.")
         curr += timedelta(days=1)
 
     # --- BALANCING LOGIC ---
@@ -543,21 +529,14 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             if s_d < lookback_date or s_d > end_date: continue
             d_o = next((d for d in duties if d['id']==int(s['duty_id'])), None)
             if not d_o: continue
-            
-            # CRITICAL SCORE FIX: Weekly only counts Sat/Sun/Special
             if d_o.get('is_weekly') and not is_scoreable_day(s_d, special_dates_set): continue
-
             conf = d_o['shift_config'][int(s.get('shift_index',0))]
             if conf.get('is_within_hours') and conf.get('default_employee_id')==int(s['employee_id']) and not is_scoreable_day(s_d, special_dates_set): continue
             sc[int(s['employee_id'])] += 1
         return sc
 
     def run_balance(target, label):
-        log(f"⚖️ Balancing {label}...")
-        
-        raw_scores_before = get_detailed_scores(target)
-        nice_scores_before = {emp_map.get(k, k): v for k, v in raw_scores_before.items()}
-        log(f"   [BEFORE] Scores: {json.dumps(nice_scores_before, ensure_ascii=False)}")
+        log(f"⚖️ Εξισορρόπηση {label}...")
         
         swaps_performed = 0
         stagnation_limit = 3
@@ -570,7 +549,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             diff = sc[max_id] - sc[min_id]
             
             if diff <= 1:
-                log(f"✅ Balanced achieved at iteration {iteration}. Diff: {diff}")
+                log(f"✅ Η Εξισορρόπηση ολοκληρώθηκε επιτυχώς (Διαφορά: {diff}).")
                 break
                 
             move_made = False
@@ -592,12 +571,11 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                     conf = d_obj['shift_config'][int(shift.get('shift_index',0))]
                     
                     if conf.get('is_within_hours') and conf.get('default_employee_id')==donor_id and not is_scoreable_day(s_date, special_dates_set): 
-                        if stagnation_count >= stagnation_limit: diagnostics.append(f"Shift {shift['date']}: Protected Default")
+                        if stagnation_count >= stagnation_limit: diagnostics.append(f"Βάρδια {shift['date']}: Κλειδωμένο Ωράριο")
                         continue
                     
-                    # Weekly shifts should typically not be moved individually
                     if d_obj.get('is_weekly'): 
-                        if stagnation_count >= stagnation_limit: diagnostics.append(f"Shift {shift['date']}: Weekly Locked")
+                        if stagnation_count >= stagnation_limit: diagnostics.append(f"Βάρδια {shift['date']}: Κλειδωμένη Εβδομαδιαία")
                         continue
                     
                     valid_receivers = [uid for uid in s_ids if sc[uid] < sc[donor_id] - 1]
@@ -605,20 +583,19 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                     for rec_id in valid_receivers:
                         if rec_id == donor_id: continue
                         if rec_id in [int(x) for x in conf.get('excluded_ids',[])]: 
-                            if stagnation_count >= stagnation_limit: diagnostics.append(f"Rec {emp_map[rec_id]} Excluded")
+                            if stagnation_count >= stagnation_limit: diagnostics.append(f"Ο/Η {emp_map[rec_id]} Εξαιρείται")
                             continue
                         if (rec_id, shift['date']) in unavail_map: 
-                            if stagnation_count >= stagnation_limit: diagnostics.append(f"Rec {emp_map[rec_id]} Unavailable on {shift['date']}")
+                            if stagnation_count >= stagnation_limit: diagnostics.append(f"Ο/Η {emp_map[rec_id]} έχει δηλώσει κώλυμα στις {shift['date']}")
                             continue
                         
                         busy_status = is_user_busy(rec_id, s_date, schedule, False)
                         if busy_status: 
-                            if stagnation_count >= stagnation_limit: diagnostics.append(f"Rec {emp_map[rec_id]} Busy ({busy_status}) on {shift['date']}")
+                            if stagnation_count >= stagnation_limit: diagnostics.append(f"Ο/Η {emp_map[rec_id]} {busy_status} στις {shift['date']}")
                             continue
                         
                         shift['employee_id'] = rec_id
                         swaps_performed += 1
-                        log(f"   🔄 Move {swaps_performed}: {shift['date']} ({d_obj['name']}) | {emp_map[donor_id]} ({sc[donor_id]}) ➔ {emp_map[rec_id]} ({sc[rec_id]})")
                         move_made = True
                         stagnation_count = 0 
                         break 
@@ -628,21 +605,16 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             if not move_made:
                 stagnation_count += 1
                 if stagnation_count > stagnation_limit:
-                    log(f"⚠️ Balancing Stalled. Diff: {diff}. Diagnostics for {emp_map[max_id]}:")
+                    log(f"⚠️ Η Εξισορρόπηση σταμάτησε (Διαφορά: {diff}). Αιτίες που δεν μειώθηκε η διαφορά:")
                     for d in list(set(diagnostics))[:5]: 
                         log(f"      - {d}")
                     break
 
-        scores_after = get_detailed_scores(target)
-        nice_scores_after = {emp_map.get(k, k): v for k, v in scores_after.items()}
-        log(f"   [AFTER] Scores: {json.dumps(nice_scores_after, ensure_ascii=False)}")
-
-    # Balance
-    run_balance([d['id'] for d in duties if not d.get('is_off_balance') and not d.get('is_special')], "Normal Duties")
-    run_balance([d['id'] for d in duties if d.get('is_off_balance') and not d.get('is_special')], "Off-Balance Duties")
+    run_balance([d['id'] for d in duties if not d.get('is_off_balance') and not d.get('is_special')], "Κανονικών Υπηρεσιών")
+    run_balance([d['id'] for d in duties if d.get('is_off_balance') and not d.get('is_special')], "Υπηρεσιών Εκτός Ισοζυγίου")
 
     # --- PHASE 5: SK Balancing ---
-    log("▶️ PHASE 5: SK (Weekend) Balancing...")
+    log("▶️ Φάση 5: Εξισορρόπηση Σαββατοκύριακων...")
     sk_swaps = 0
     sk_win_start = (end_date - relativedelta(months=5)).replace(day=1)
     
@@ -681,10 +653,10 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 if swapped: break
             if swapped: break
         if not swapped: break
-    log(f"✅ Phase 5 Complete: {sk_swaps} SK swaps performed.")
+    log(f"✅ Ολοκληρώθηκε (Έγιναν {sk_swaps} αλλαγές).")
 
     # --- PHASE 6: Double Duty ---
-    log("▶️ PHASE 6: Double Duty Optimizations...")
+    log("▶️ Φάση 6: Βελτιστοποίηση Διπλοβάρδιων (ΣΚ)...")
     dd_count = 0
     target_users = [uid for uid in double_duty_prefs if any(int(s['employee_id'])==uid for s in schedule)]
     for uid in target_users:
@@ -708,13 +680,13 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                  if (uid, target['date']) not in unavail_map and not is_user_busy(uid, dt.strptime(target['date'],'%Y-%m-%d').date(), schedule, False):
                      move['employee_id'] = oid; target['employee_id'] = uid
                      dd_count += 1
-    log(f"✅ Phase 6 Complete: {dd_count} Double Duties created.")
+    log(f"✅ Ολοκληρώθηκε (Δημιουργήθηκαν {dd_count} διπλοβάρδιες).")
 
-    log("✅ Scheduler Finished Successfully.")
+    log("✅ Ο Χρονοπρογραμματισμός ολοκληρώθηκε επιτυχώς.")
     return schedule, {"rotation_queues": rot_q, "next_round_queues": nxt_q, "logs": logs}
 
 # ==========================================
-# 8. ROUTES
+# 7. ROUTES
 # ==========================================
 @app.errorhandler(429)
 def ratelimit_handler(e):
