@@ -7,7 +7,7 @@ import { AppHeader, formatDate, getDaysInMonth, getDayName } from '../components
 import { 
   Calendar, Settings, Users, BarChart, 
   Play, Save, Lock, AlertTriangle, 
-  Trash2, Plus, X, Printer, Edit2, Clock, Moon, Briefcase, Calendar as CalIcon, FileText
+  Trash2, Plus, X, Printer, Edit2, Clock, Moon, Briefcase, Calendar as CalIcon, FileText, UserCheck
 } from 'lucide-react';
 
 // --- HELPER: Name Formatter (J. Doe) ---
@@ -99,8 +99,13 @@ export const ServicesApp = ({ user, onExit }) => {
     const [generalSettings, setGeneralSettings] = useState({ declaration_deadline: 25, signee_name: '' });
     const [protocolData, setProtocolData] = useState({ protocol_num: '', protocol_date: '' });
 
-    // Double Duty Preference State
+    // Double Duty Preference State (User)
     const [doubleDutyPref, setDoubleDutyPref] = useState(false);
+
+    // --- ADMIN DECLARATIONS STATE ---
+    const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
+    const [adminUnavail, setAdminUnavail] = useState([]);
+    const [adminDoubleDutyPref, setAdminDoubleDutyPref] = useState(false);
 
     // New Special Date Input State
     const [newSpecialDate, setNewSpecialDate] = useState('');
@@ -119,12 +124,54 @@ export const ServicesApp = ({ user, onExit }) => {
         setMyUnavail(res.data);
     };
 
+    // --- ADMIN DECLARATION HELPERS ---
+    const loadAdminUnavailability = async (empId) => {
+        if(!empId) return;
+        try {
+            const res = await api.get(`${API_URL}/services/unavailability?employee_id=${empId}`);
+            setAdminUnavail(res.data);
+            
+            const mStr = currentMonth.toISOString().slice(0, 7);
+            const prefRes = await api.get(`${API_URL}/services/preferences?user_id=${empId}&month=${mStr}`);
+            setAdminDoubleDutyPref(prefRes.data.prefer_double_sk);
+        } catch(e) { console.error(e); }
+    };
+
+    const toggleAdminUnavailability = async (dateStr) => {
+        if(!selectedEmployeeId) return;
+        const exists = adminUnavail.find(u => u.date === dateStr);
+        setAdminUnavail(prev => exists ? prev.filter(u=>u.date!==dateStr) : [...prev, {date: dateStr, employee_id: selectedEmployeeId}]);
+        
+        if (exists) await api.delete(`${API_URL}/services/unavailability?employee_id=${selectedEmployeeId}&date=${dateStr}`);
+        else await api.post(`${API_URL}/services/unavailability`, { employee_id: selectedEmployeeId, date: dateStr });
+        
+        loadAdminUnavailability(selectedEmployeeId);
+    };
+
+    const toggleAdminDoubleDutyPref = async () => {
+        if(!selectedEmployeeId) return;
+        const newVal = !adminDoubleDutyPref;
+        setAdminDoubleDutyPref(newVal);
+        const mStr = currentMonth.toISOString().slice(0, 7);
+        try {
+            await api.post(`${API_URL}/services/preferences`, {
+                user_id: selectedEmployeeId,
+                month: mStr,
+                value: newVal
+            });
+        } catch(e) {
+            alert("Σφάλμα αποθήκευσης.");
+            setAdminDoubleDutyPref(!newVal);
+        }
+    };
+
     useEffect(() => {
         const fetchAll = async () => {
             try {
                 const c = await api.get(`${API_URL}/admin/services/config`); setConfig(c.data);
                 const s = await api.get(`${API_URL}/services/schedule`); setSchedule(s.data);
                 const e = await api.get(`${API_URL}/admin/employees`); setEmployees(e.data);
+                if(e.data.length > 0) setSelectedEmployeeId(e.data[0].id); // Default select first
                 
                 if (isAdmin) {
                     const setRes = await api.get(`${API_URL}/admin/settings`);
@@ -173,7 +220,11 @@ export const ServicesApp = ({ user, onExit }) => {
                 .then(res => setDoubleDutyPref(res.data.prefer_double_sk))
                 .catch(e => console.error(e));
         }
-    }, [currentMonth, tab, user.id, isAdmin]);
+        // Admin Tab Logic
+        if (tab === 'admin_declare' && isAdmin && selectedEmployeeId) {
+            loadAdminUnavailability(selectedEmployeeId);
+        }
+    }, [currentMonth, tab, user.id, isAdmin, selectedEmployeeId]);
 
     const toggleDoubleDutyPref = async () => {
         const newVal = !doubleDutyPref;
@@ -329,7 +380,6 @@ export const ServicesApp = ({ user, onExit }) => {
         const target = { ...sConf[shiftIdx] };
         const handicaps = { ...(target.handicaps || {}) };
         
-        // --- FIX: FORCE KEY TO STRING TO MATCH DATABASE FORMAT ---
         handicaps[String(empId)] = parseInt(val);
         
         target.handicaps = handicaps;
@@ -373,7 +423,6 @@ export const ServicesApp = ({ user, onExit }) => {
         if(!conf[idx]) conf[idx] = {is_night:false, is_within_hours:false, active_range: {start:'', end:''}, excluded_ids:[], handicaps:{}, default_employee_id: null};
         conf[idx][flag] = !conf[idx][flag];
         
-        // Reset default if unchecked
         if (flag === 'is_within_hours' && !conf[idx][flag]) {
             conf[idx].default_employee_id = null;
         }
@@ -400,16 +449,13 @@ export const ServicesApp = ({ user, onExit }) => {
         setDutyForm({...dutyForm, sunday_active_range: { ...(dutyForm.sunday_active_range || {}), [field]: val }});
     };
     
-    // Add Special Date with Description & Recurring
     const addSpecial = async () => {
          if(!newSpecialDate) return alert("Επιλέξτε ημερομηνία");
-         
          let dateToSend = newSpecialDate;
          if (isRecurring) {
              const [, m, d] = newSpecialDate.split('-');
              dateToSend = `2000-${m}-${d}`;
          }
-
          try {
              await api.post(`${API_URL}/admin/special_dates`, { 
                  date: dateToSend, 
@@ -436,13 +482,11 @@ export const ServicesApp = ({ user, onExit }) => {
 
     const runManualScheduler = async () => {
         if (!schedulerRange.start) return alert("Επιλέξτε μήνα.");
-        
         if (!window.confirm(`Προσοχή! Αυτή η ενέργεια θα διαγράψει και θα ξαναδημιουργήσει το πρόγραμμα για τον μήνα ${schedulerRange.start}. Συνέχεια;`)) return;
-
         try {
             const res = await api.post(`${API_URL}/services/run_scheduler`, { 
                 start: schedulerRange.start, 
-                end: schedulerRange.start // Single month logic
+                end: schedulerRange.start 
             });
             const s = await api.get(`${API_URL}/services/schedule`); 
             setSchedule(s.data);
@@ -452,17 +496,19 @@ export const ServicesApp = ({ user, onExit }) => {
         } catch (e) { console.error(e); alert("Σφάλμα: " + (e.response?.data?.error || e.message)); }
     };
 
+    // --- FIX: ROBUST LAST DAY CALCULATION ---
     const runClearSchedule = async () => {
         if (!clearRange.start) return alert("Επιλέξτε μήνα.");
         
         if (!window.confirm(`Είστε σίγουροι; Αυτή η ενέργεια θα διαγράψει το πρόγραμμα για τον μήνα ${clearRange.start}. (Τα κλειδωμένα διατηρούνται)`)) return;
         
-        // Single month logic
         const start = clearRange.start + "-01"; 
-        const endDt = new Date(clearRange.start + "-01"); 
-        endDt.setMonth(endDt.getMonth() + 1); 
-        endDt.setDate(0); 
-        const endStr = endDt.toISOString().split('T')[0];
+        
+        // Calculate end date strictly using calendar values to avoid Timezone shifts
+        const [year, month] = clearRange.start.split('-').map(Number);
+        // new Date(year, month, 0) gives the last day of the 'month' (where month is 1-based from input, acting as 0-based next month for constructor)
+        const lastDay = new Date(year, month, 0).getDate(); 
+        const endStr = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
 
         try { 
             await api.post(`${API_URL}/services/clear_schedule`, { start_date: start, end_date: endStr }); 
@@ -513,6 +559,11 @@ export const ServicesApp = ({ user, onExit }) => {
 
     const renderCalendar = (mode) => {
         const year = currentMonth.getFullYear(); const month = currentMonth.getMonth(); const days = []; const specialDates = config.special_dates || [];
+        
+        // Determine unavailabilities to use based on mode
+        const relevantUnavail = (mode === 'admin_declare') ? adminUnavail : myUnavail;
+        const targetUserId = (mode === 'admin_declare') ? selectedEmployeeId : user.id;
+
         for(let d=1; d<=getDaysInMonth(year, month); d++) {
             const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
             const isSpecial = specialDates.some(sd => { 
@@ -524,41 +575,49 @@ export const ServicesApp = ({ user, onExit }) => {
             const dayShifts = schedule.filter(s=>s.date===dateStr);
             const dayOfWeek = new Date(year, month, d).getDay(); 
             const isWeekend = dayOfWeek % 6 === 0;
-            const isUnavail = myUnavail.some(u => u.date === dateStr);
-            const isMyShift = dayShifts.some(s => s.employee_id === user.id);
+            const isUnavail = relevantUnavail.some(u => u.date === dateStr);
+            const isMyShift = dayShifts.some(s => s.employee_id === targetUserId);
             
-            // Problem Detection Logic (Red Dates)
             let hasProblem = false;
             if (mode === 'admin_view' && !isSpecial) {
                 config.duties.forEach(duty => {
                     if(duty.is_special) return;
                     if(duty.is_weekly && dayOfWeek !== 0) return;
                     if(!isDateInActiveRange(dateStr, duty.active_range)) return;
-
                     for(let i=0; i<duty.shifts_per_day; i++) {
                         if(!isDateInActiveRange(dateStr, duty.shift_config[i].active_range)) continue;
                         if(duty.is_weekly && !isDateInActiveRange(dateStr, duty.sunday_active_range)) continue;
-
                         const s = dayShifts.find(x => x.duty_id === duty.id && x.shift_index === i);
                         if(!s || !s.employee_id) hasProblem = true;
                     }
                 });
             }
 
-            let bg = isSpecial ? '#fff9c4' : (isWeekend ? '#e3f2fd' : 'white'); // Gold for Special
-            let borderColor = isSpecial ? '#fbc02d' : (isWeekend ? '#90caf9' : '#e0e0e0'); // Gold border
+            let bg = isSpecial ? '#fff9c4' : (isWeekend ? '#e3f2fd' : 'white'); 
+            let borderColor = isSpecial ? '#fbc02d' : (isWeekend ? '#90caf9' : '#e0e0e0'); 
             
-            if (hasProblem) { bg = '#ffcdd2'; borderColor = '#e53935'; } // Red for Problems
+            if (hasProblem) { bg = '#ffcdd2'; borderColor = '#e53935'; }
 
             if (mode === 'staff_view') { if (isMyShift) { bg = '#e8f5e9'; borderColor = '#a5d6a7'; } else if (isUnavail) { bg = '#eceff1'; borderColor = '#b0bec5'; } }
-            if (mode === 'declare_unavail' && isUnavail) { bg = '#eceff1'; borderColor = '#b0bec5'; }
             
+            // Logic for Declarations (Both Staff and Admin)
+            if ((mode === 'declare_unavail' || mode === 'admin_declare') && isUnavail) { bg = '#eceff1'; borderColor = '#b0bec5'; }
+            
+            const handleDayClick = () => {
+                if(mode==='admin_view') setModal({date:dateStr}); 
+                if(mode==='declare_unavail') toggleUnavailability(dateStr);
+                if(mode==='admin_declare') toggleAdminUnavailability(dateStr);
+            };
+
             days.push(
-                <div key={d} className="cal-day" style={{background: bg, border: `1px solid ${borderColor}`, borderRadius: '8px', minHeight: 110, padding: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)', transition: 'transform 0.1s ease', cursor: mode !== 'staff_view' ? 'pointer' : 'default'}} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 8px rgba(0,0,0,0.1)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.05)'; }} onClick={()=>{ if(mode==='admin_view') setModal({date:dateStr}); if(mode==='declare_unavail') toggleUnavailability(dateStr); }}>
+                <div key={d} className="cal-day" style={{background: bg, border: `1px solid ${borderColor}`, borderRadius: '8px', minHeight: 110, padding: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)', transition: 'transform 0.1s ease', cursor: (mode === 'staff_view') ? 'default' : 'pointer'}} onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 8px rgba(0,0,0,0.1)'; }} onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 2px 4px rgba(0,0,0,0.05)'; }} onClick={handleDayClick}>
                     <div style={{fontWeight:'bold', display:'flex', justifyContent:'space-between', marginBottom: 5, color: isWeekend ? '#0277bd' : '#333'}}><span style={{fontSize:'1.1em'}}>{d}</span>{isSpecial && <span style={{color:'purple', fontSize:'1.2em'}}>★</span>}</div>
-                    {mode !== 'declare_unavail' && config.duties.filter(d=>!d.is_special).map(duty => { return Array.from({length: duty.shifts_per_day}).map((_, shiftIdx) => { const s = dayShifts.find(x => x.duty_id === duty.id && x.shift_index === shiftIdx); const emp = employees.find(e => e.id === s?.employee_id); let dispName = '-'; let isMe = false; if (emp) { dispName = formatName(emp.name); isMe = (emp.id === user.id); } else { if (duty.is_weekly && dayOfWeek === 0) { const prevDate = new Date(year, month, d - 1); const prevDateStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,'0')}-${String(prevDate.getDate()).padStart(2,'0')}`; const prevS = schedule.find(x => x.date === prevDateStr && x.duty_id === duty.id && x.shift_index === shiftIdx); if (prevS) { const prevEmp = employees.find(e => e.id === prevS.employee_id); if (prevEmp) { dispName = `(${formatName(prevEmp.name)})`; if(prevEmp.id === user.id) isMe = true; } } } else if (!duty.is_weekly) { const range = duty.shift_config[shiftIdx]?.active_range; if (!isDateInActiveRange(dateStr, range) && shiftIdx > 0) { const prevS = dayShifts.find(x => x.duty_id === duty.id && x.shift_index === shiftIdx - 1); if(prevS) { const prevEmp = employees.find(e => e.id === prevS.employee_id); if(prevEmp) { dispName = `(${formatName(prevEmp.name)})`; if(prevEmp.id === user.id) isMe = true; } } } } } return ( <div key={`${duty.id}-${shiftIdx}`} style={{fontSize:'0.8rem', marginTop:2, display:'flex', justifyContent:'space-between'}}> <span style={{fontWeight:600, color:'#555'}}>{duty.name.substring(0,4)}:</span> <span style={{color: dispName.startsWith('(') ? '#888' : (isMe ? '#d32f2f' : '#000'), fontWeight: isMe ? '900' : 'normal', textDecoration: isMe ? 'underline' : 'none'}}>{dispName}</span> </div> ) }) })}
-                    {mode !== 'declare_unavail' && dayShifts.filter(s => {const d=config.duties.find(x=>x.id===s.duty_id); return d && d.is_special}).map((s, i) => { const dName = config.duties.find(x=>x.id===s.duty_id)?.name; const emp = employees.find(e=>e.id===s.employee_id); const isMe = emp && emp.id === user.id; return ( <div key={`sp-${i}`} style={{fontSize:'0.75rem', marginTop:2, color: isMe ? '#d32f2f' : 'blue', fontWeight:'bold'}}> <strong>{dName}</strong>: {formatName(emp?.name)} </div> ) })}
-                    {(mode === 'declare_unavail' || mode === 'staff_view') && isUnavail && <div style={{fontSize:'0.8rem', color:'#d32f2f', fontWeight:'bold', marginTop:10, textAlign:'center'}}>⛔ Μη διαθέσιμος</div>}
+                    
+                    {/* Only show shifts if NOT in declare mode */}
+                    {mode !== 'declare_unavail' && mode !== 'admin_declare' && config.duties.filter(d=>!d.is_special).map(duty => { return Array.from({length: duty.shifts_per_day}).map((_, shiftIdx) => { const s = dayShifts.find(x => x.duty_id === duty.id && x.shift_index === shiftIdx); const emp = employees.find(e => e.id === s?.employee_id); let dispName = '-'; let isMe = false; if (emp) { dispName = formatName(emp.name); isMe = (emp.id === targetUserId); } else { if (duty.is_weekly && dayOfWeek === 0) { const prevDate = new Date(year, month, d - 1); const prevDateStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth()+1).padStart(2,'0')}-${String(prevDate.getDate()).padStart(2,'0')}`; const prevS = schedule.find(x => x.date === prevDateStr && x.duty_id === duty.id && x.shift_index === shiftIdx); if (prevS) { const prevEmp = employees.find(e => e.id === prevS.employee_id); if (prevEmp) { dispName = `(${formatName(prevEmp.name)})`; if(prevEmp.id === targetUserId) isMe = true; } } } else if (!duty.is_weekly) { const range = duty.shift_config[shiftIdx]?.active_range; if (!isDateInActiveRange(dateStr, range) && shiftIdx > 0) { const prevS = dayShifts.find(x => x.duty_id === duty.id && x.shift_index === shiftIdx - 1); if(prevS) { const prevEmp = employees.find(e => e.id === prevS.employee_id); if(prevEmp) { dispName = `(${formatName(prevEmp.name)})`; if(prevEmp.id === targetUserId) isMe = true; } } } } } return ( <div key={`${duty.id}-${shiftIdx}`} style={{fontSize:'0.8rem', marginTop:2, display:'flex', justifyContent:'space-between'}}> <span style={{fontWeight:600, color:'#555'}}>{duty.name.substring(0,4)}:</span> <span style={{color: dispName.startsWith('(') ? '#888' : (isMe ? '#d32f2f' : '#000'), fontWeight: isMe ? '900' : 'normal', textDecoration: isMe ? 'underline' : 'none'}}>{dispName}</span> </div> ) }) })}
+                    
+                    {/* Show Unavailability status in declare modes */}
+                    {(mode === 'declare_unavail' || mode === 'admin_declare' || mode === 'staff_view') && isUnavail && <div style={{fontSize:'0.8rem', color:'#d32f2f', fontWeight:'bold', marginTop:10, textAlign:'center'}}>⛔ Μη διαθέσιμος</div>}
                 </div>
             );
         }
@@ -568,7 +627,9 @@ export const ServicesApp = ({ user, onExit }) => {
     return (
         <div className="app-shell">
             <AppHeader title="Υπηρεσίες" user={user} onExit={onExit} icon={<Calendar size={24} />} />
-            {(tab === 'schedule' || tab === 'myschedule' || tab === 'declare') && 
+            
+            {/* Show Navigation for ALL tabs except Seniority, Duties, Settings (where month doesn't matter as much) */}
+            {tab !== 'seniority' && tab !== 'duties' && tab !== 'settings' && tab !== 'special' &&
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20}}>
                 <div style={{display:'flex', gap:10}}>
                     <button className="nav-btn" onClick={()=>setCurrentMonth(new Date(currentMonth.setMonth(currentMonth.getMonth()-1)))}>←</button>
@@ -579,7 +640,6 @@ export const ServicesApp = ({ user, onExit }) => {
                 </div>
                 {isAdmin && tab === 'schedule' && (
                     <div style={{display:'flex', gap:10}}>
-                         {/* FIX: Use ActionButton for Hover */}
                         <ActionButton onClick={()=>setClearModal(true)} icon={Trash2} label="Καθαρισμός" color="#F44336" hoverColor="#d32f2f" />
                         <ActionButton onClick={()=>setSchedulerModal(true)} icon={Play} label="Αυτόματη Ανάθεση" color="#FF9800" hoverColor="#f57c00" />
                         <ActionButton onClick={generateServicePDF} icon={Printer} label="PDF" color="#2196F3" hoverColor="#1976D2" />
@@ -590,6 +650,7 @@ export const ServicesApp = ({ user, onExit }) => {
             {isAdmin ? (
                 <div className="tabs">
                     <button className={tab==='schedule'?'active':''} onClick={()=>setTab('schedule')}><Calendar size={16}/> Πρόγραμμα</button>
+                    <button className={tab==='admin_declare'?'active':''} onClick={()=>setTab('admin_declare')}><UserCheck size={16}/> Διαχείριση Δηλώσεων</button>
                     <button className={tab==='seniority'?'active':''} onClick={()=>setTab('seniority')}><Users size={16}/> Αρχαιότητα</button>
                     <button className={tab==='duties'?'active':''} onClick={()=>setTab('duties')}><Settings size={16}/> Τύποι Υπηρεσίας</button>
                     <button className={tab==='assign'?'active':''} onClick={()=>setTab('assign')}><Lock size={16}/> Αναθέσεις</button>
@@ -613,6 +674,38 @@ export const ServicesApp = ({ user, onExit }) => {
                     </div>
                 </>
             )}
+            
+            {tab === 'admin_declare' && isAdmin && (
+                <>
+                    <div style={{background:'white', padding:15, borderRadius:8, marginBottom:20, boxShadow:'0 2px 4px rgba(0,0,0,0.05)', border:'1px solid #ddd'}}>
+                        <div style={{display:'flex', alignItems:'center', gap:15}}>
+                            <label style={{fontWeight:'bold'}}>Επιλογή Υπαλλήλου:</label>
+                            <select 
+                                value={selectedEmployeeId || ''} 
+                                onChange={(e) => setSelectedEmployeeId(parseInt(e.target.value))}
+                                style={{padding:8, borderRadius:4, border:'1px solid #ccc', minWidth:200}}
+                            >
+                                {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style={{background:'#e3f2fd', padding:15, borderRadius:8, marginBottom:20, borderLeft:'4px solid #2196F3'}}>
+                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                            <div>
+                                <h4 style={{margin:'0 0 5px 0', color:'#0d47a1'}}>Προτίμηση Διπλοβάρδιας ΣΚ (Διαχειριστής)</h4>
+                                <p style={{margin:0, fontSize:'0.9rem', color:'#555'}}> Ορίζετε αν ο επιλεγμένος υπάλληλος επιθυμεί διπλοβάρδια. </p>
+                            </div>
+                            <label className="switch" style={{display:'flex', alignItems:'center', gap:10, cursor:'pointer'}}> 
+                                <input type="checkbox" checked={adminDoubleDutyPref} onChange={toggleAdminDoubleDutyPref} style={{width:20, height:20}}/> 
+                                <span style={{fontWeight:'bold'}}>Ενεργοποίηση</span> 
+                            </label>
+                        </div>
+                    </div>
+                    {renderCalendar('admin_declare')}
+                </>
+            )}
+
             {tab === 'myschedule' && renderCalendar('staff_view')}
             {tab === 'declare' && (
                 <>
