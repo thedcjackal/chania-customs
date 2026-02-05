@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'; // Added useCallback
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../api/axios';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -632,12 +632,24 @@ export const ServicesApp = ({ user, onExit }) => {
         return <div className="calendar-grid">{days}</div>;
     };
 
+    // Common Tab Button Style for Vertical Layout
+    const tabBtnStyle = {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '6px',
+        padding: '10px 15px',
+        height: 'auto',
+        fontSize: '0.85rem'
+    };
+
     return (
         <div className="app-shell">
             <AppHeader title="Υπηρεσίες" user={user} onExit={onExit} icon={<Calendar size={24} />} />
             
             {/* Show Navigation for ALL tabs except Seniority, Duties, Settings (where month doesn't matter as much) */}
-            {tab !== 'seniority' && tab !== 'duties' && tab !== 'settings' && tab !== 'special' &&
+            {tab !== 'seniority' && tab !== 'duties' && tab !== 'special' && 
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20}}>
                 <div style={{display:'flex', gap:10}}>
                     <button className="nav-btn" onClick={()=>setCurrentMonth(new Date(currentMonth.setMonth(currentMonth.getMonth()-1)))}>←</button>
@@ -656,20 +668,50 @@ export const ServicesApp = ({ user, onExit }) => {
             </div>}
             
             {isAdmin ? (
-                <div className="tabs">
-                    <button className={tab==='schedule'?'active':''} onClick={()=>setTab('schedule')}><Calendar size={16}/> Πρόγραμμα</button>
-                    <button className={tab==='admin_declare'?'active':''} onClick={()=>setTab('admin_declare')}><UserCheck size={16}/> Διαχείριση Δηλώσεων</button>
-                    <button className={tab==='seniority'?'active':''} onClick={()=>setTab('seniority')}><Users size={16}/> Αρχαιότητα</button>
-                    <button className={tab==='duties'?'active':''} onClick={()=>setTab('duties')}><Settings size={16}/> Τύποι Υπηρεσίας</button>
-                    <button className={tab==='assign'?'active':''} onClick={()=>setTab('assign')}><Lock size={16}/> Αναθέσεις</button>
-                    <button className={tab==='special'?'active':''} onClick={()=>setTab('special')}><AlertTriangle size={16}/> Ειδικές Ημερομηνίες</button>
-                    <button className={tab==='balance'?'active':''} onClick={()=>setTab('balance')}><BarChart size={16}/> Ισοζύγιο Υπηρεσιών</button>
-                    <button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}><FileText size={16}/> Γενικές Ρυθμίσεις</button>
+                <div className="tabs" style={{display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 20}}>
+                    <button className={tab==='schedule'?'active':''} onClick={()=>setTab('schedule')} style={tabBtnStyle}>
+                        <Calendar size={20}/>
+                        <span>Πρόγραμμα</span>
+                    </button>
+                    <button className={tab==='admin_declare'?'active':''} onClick={()=>setTab('admin_declare')} style={tabBtnStyle}>
+                        <UserCheck size={20}/>
+                        <span>Διαχ. Δηλώσεων</span>
+                    </button>
+                    <button className={tab==='seniority'?'active':''} onClick={()=>setTab('seniority')} style={tabBtnStyle}>
+                        <Users size={20}/>
+                        <span>Αρχαιότητα</span>
+                    </button>
+                    <button className={tab==='duties'?'active':''} onClick={()=>setTab('duties')} style={tabBtnStyle}>
+                        <Settings size={20}/>
+                        <span>Τύποι Υπηρεσίας</span>
+                    </button>
+                    <button className={tab==='assign'?'active':''} onClick={()=>setTab('assign')} style={tabBtnStyle}>
+                        <Lock size={20}/>
+                        <span>Αναθέσεις</span>
+                    </button>
+                    <button className={tab==='special'?'active':''} onClick={()=>setTab('special')} style={tabBtnStyle}>
+                        <AlertTriangle size={20}/>
+                        <span>Ειδικές Ημερ.</span>
+                    </button>
+                    <button className={tab==='balance'?'active':''} onClick={()=>setTab('balance')} style={tabBtnStyle}>
+                        <BarChart size={20}/>
+                        <span>Ισοζύγιο</span>
+                    </button>
+                    <button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')} style={tabBtnStyle}>
+                        <FileText size={20}/>
+                        <span>Γενικές Ρυθμίσεις</span>
+                    </button>
                 </div>
             ) : (
-                <div className="tabs">
-                    <button className={tab==='myschedule'?'active':''} onClick={()=>setTab('myschedule')}>Πρόγραμμα</button>
-                    <button className={tab==='declare'?'active':''} onClick={()=>setTab('declare')}>Δηλώσεις</button>
+                <div className="tabs" style={{display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 20}}>
+                    <button className={tab==='myschedule'?'active':''} onClick={()=>setTab('myschedule')} style={tabBtnStyle}>
+                        <Calendar size={20}/>
+                        <span>Πρόγραμμα</span>
+                    </button>
+                    <button className={tab==='declare'?'active':''} onClick={()=>setTab('declare')} style={tabBtnStyle}>
+                        <FileText size={20}/>
+                        <span>Δηλώσεις</span>
+                    </button>
                 </div>
             )}
 
@@ -801,7 +843,6 @@ export const ServicesApp = ({ user, onExit }) => {
                     <tbody>
                         {employees.map(e => ( <tr key={e.id}> <td>{e.name}</td> {config.duties.map(d => ( d.shift_config.map((s, idx) => { 
                             const isExcluded = s.excluded_ids?.includes(e.id); 
-                            // --- FIX: USE STRING KEY ---
                             const handicap = s.handicaps?.[String(e.id)] || 0; 
                             return ( <td key={`${d.id}-${idx}`} style={{textAlign:'center', background: isExcluded ? '#ffebee' : 'transparent'}}> <div style={{display:'flex', gap:5, justifyContent:'center', alignItems:'center'}}> <input type="checkbox" title="Exclude" checked={!isExcluded} onChange={()=>toggleExclusion(d.id, idx, e.id)} /> <select style={{width:45, padding:0, fontWeight: handicap > 0 ? 'bold' : 'normal', color: handicap > 0 ? 'red' : 'inherit'}} value={handicap} onChange={(ev)=>updateHandicap(d.id, idx, e.id, ev.target.value)} > <option value="0">-</option> {Array.from({length: 30}, (_, i) => i + 1).map(val => ( <option key={val} value={val}>+{val}</option> ))} </select> </div> </td> ); }) ))} </tr> ))}
                     </tbody>
