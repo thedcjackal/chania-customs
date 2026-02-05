@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react'; // Added useCallback
 import api from '../api/axios';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -119,13 +119,15 @@ export const ServicesApp = ({ user, onExit }) => {
     const printRef1 = useRef(); 
     const printRef2 = useRef();
 
-    const loadMyUnavailability = async () => {
+    // Use useCallback to memoize function so it can be a dependency
+    const loadMyUnavailability = useCallback(async () => {
         const res = await api.get(`${API_URL}/services/unavailability?employee_id=${user.id}`);
         setMyUnavail(res.data);
-    };
+    }, [user.id]);
 
     // --- ADMIN DECLARATION HELPERS ---
-    const loadAdminUnavailability = async (empId) => {
+    // Use useCallback here as well
+    const loadAdminUnavailability = useCallback(async (empId) => {
         if(!empId) return;
         try {
             const res = await api.get(`${API_URL}/services/unavailability?employee_id=${empId}`);
@@ -135,7 +137,7 @@ export const ServicesApp = ({ user, onExit }) => {
             const prefRes = await api.get(`${API_URL}/services/preferences?user_id=${empId}&month=${mStr}`);
             setAdminDoubleDutyPref(prefRes.data.prefer_double_sk);
         } catch(e) { console.error(e); }
-    };
+    }, [currentMonth]); // Depends on currentMonth for preference fetching
 
     const toggleAdminUnavailability = async (dateStr) => {
         if(!selectedEmployeeId) return;
@@ -186,8 +188,7 @@ export const ServicesApp = ({ user, onExit }) => {
             } catch (err) { console.error(err); }
         };
         fetchAll();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user.id, isAdmin]);
+    }, [user.id, isAdmin, loadMyUnavailability]); // Added loadMyUnavailability to deps
 
     useEffect(() => {
         if(tab === 'balance' && isAdmin) {
@@ -224,7 +225,7 @@ export const ServicesApp = ({ user, onExit }) => {
         if (tab === 'admin_declare' && isAdmin && selectedEmployeeId) {
             loadAdminUnavailability(selectedEmployeeId);
         }
-    }, [currentMonth, tab, user.id,loadAdminUnavailability, isAdmin, selectedEmployeeId]);
+    }, [currentMonth, tab, user.id, isAdmin, selectedEmployeeId, loadAdminUnavailability]); // Added loadAdminUnavailability
 
     const toggleDoubleDutyPref = async () => {
         const newVal = !doubleDutyPref;
@@ -380,6 +381,7 @@ export const ServicesApp = ({ user, onExit }) => {
         const target = { ...sConf[shiftIdx] };
         const handicaps = { ...(target.handicaps || {}) };
         
+        // --- FIX: FORCE KEY TO STRING TO MATCH DATABASE FORMAT ---
         handicaps[String(empId)] = parseInt(val);
         
         target.handicaps = handicaps;
@@ -423,6 +425,7 @@ export const ServicesApp = ({ user, onExit }) => {
         if(!conf[idx]) conf[idx] = {is_night:false, is_within_hours:false, active_range: {start:'', end:''}, excluded_ids:[], handicaps:{}, default_employee_id: null};
         conf[idx][flag] = !conf[idx][flag];
         
+        // Reset default if unchecked
         if (flag === 'is_within_hours' && !conf[idx][flag]) {
             conf[idx].default_employee_id = null;
         }
@@ -449,13 +452,16 @@ export const ServicesApp = ({ user, onExit }) => {
         setDutyForm({...dutyForm, sunday_active_range: { ...(dutyForm.sunday_active_range || {}), [field]: val }});
     };
     
+    // Add Special Date with Description & Recurring
     const addSpecial = async () => {
          if(!newSpecialDate) return alert("Επιλέξτε ημερομηνία");
+         
          let dateToSend = newSpecialDate;
          if (isRecurring) {
              const [, m, d] = newSpecialDate.split('-');
              dateToSend = `2000-${m}-${d}`;
          }
+
          try {
              await api.post(`${API_URL}/admin/special_dates`, { 
                  date: dateToSend, 
@@ -482,11 +488,13 @@ export const ServicesApp = ({ user, onExit }) => {
 
     const runManualScheduler = async () => {
         if (!schedulerRange.start) return alert("Επιλέξτε μήνα.");
+        
         if (!window.confirm(`Προσοχή! Αυτή η ενέργεια θα διαγράψει και θα ξαναδημιουργήσει το πρόγραμμα για τον μήνα ${schedulerRange.start}. Συνέχεια;`)) return;
+
         try {
             const res = await api.post(`${API_URL}/services/run_scheduler`, { 
                 start: schedulerRange.start, 
-                end: schedulerRange.start 
+                end: schedulerRange.start // Single month logic
             });
             const s = await api.get(`${API_URL}/services/schedule`); 
             setSchedule(s.data);
