@@ -224,7 +224,7 @@ export const ServicesApp = ({ user, onExit }) => {
         if (tab === 'admin_declare' && isAdmin && selectedEmployeeId) {
             loadAdminUnavailability(selectedEmployeeId);
         }
-    }, [currentMonth, tab, user.id, isAdmin, selectedEmployeeId]);
+    }, [currentMonth, tab, user.id,loadAdminUnavailability, isAdmin, selectedEmployeeId]);
 
     const toggleDoubleDutyPref = async () => {
         const newVal = !doubleDutyPref;
