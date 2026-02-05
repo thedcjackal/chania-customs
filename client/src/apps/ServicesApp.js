@@ -114,8 +114,6 @@ export const ServicesApp = ({ user, onExit }) => {
     const printRef1 = useRef(); 
     const printRef2 = useRef();
 
-    // Define this BEFORE useEffect so it can be included in deps if needed, 
-    // or keep it outside and disable eslint rule.
     const loadMyUnavailability = async () => {
         const res = await api.get(`${API_URL}/services/unavailability?employee_id=${user.id}`);
         setMyUnavail(res.data);
@@ -217,8 +215,6 @@ export const ServicesApp = ({ user, onExit }) => {
         } catch(e) { alert("Σφάλμα αποθήκευσης."); }
     };
 
-    // Removed unused loadConfig function
-    
     const toggleUnavailability = async (dateStr) => {
         if (!isAdmin) {
             const today = new Date();
@@ -332,7 +328,10 @@ export const ServicesApp = ({ user, onExit }) => {
         const sConf = duty.shift_config.map(s => ({...s})); 
         const target = { ...sConf[shiftIdx] };
         const handicaps = { ...(target.handicaps || {}) };
-        handicaps[empId] = parseInt(val);
+        
+        // --- FIX: FORCE KEY TO STRING TO MATCH DATABASE FORMAT ---
+        handicaps[String(empId)] = parseInt(val);
+        
         target.handicaps = handicaps;
         sConf[shiftIdx] = target;
         duty.shift_config = sConf;
@@ -400,8 +399,6 @@ export const ServicesApp = ({ user, onExit }) => {
     const handleSundayRangeChange = (field, val) => {
         setDutyForm({...dutyForm, sunday_active_range: { ...(dutyForm.sunday_active_range || {}), [field]: val }});
     };
-    
-    // Removed unused toggleSpecial function
     
     // Add Special Date with Description & Recurring
     const addSpecial = async () => {
@@ -701,7 +698,11 @@ export const ServicesApp = ({ user, onExit }) => {
                         </tr>
                     </thead>
                     <tbody>
-                        {employees.map(e => ( <tr key={e.id}> <td>{e.name}</td> {config.duties.map(d => ( d.shift_config.map((s, idx) => { const isExcluded = s.excluded_ids?.includes(e.id); const handicap = s.handicaps?.[e.id] || 0; return ( <td key={`${d.id}-${idx}`} style={{textAlign:'center', background: isExcluded ? '#ffebee' : 'transparent'}}> <div style={{display:'flex', gap:5, justifyContent:'center', alignItems:'center'}}> <input type="checkbox" title="Exclude" checked={!isExcluded} onChange={()=>toggleExclusion(d.id, idx, e.id)} /> <select style={{width:45, padding:0, fontWeight: handicap > 0 ? 'bold' : 'normal', color: handicap > 0 ? 'red' : 'inherit'}} value={handicap} onChange={(ev)=>updateHandicap(d.id, idx, e.id, ev.target.value)} > <option value="0">-</option> {Array.from({length: 30}, (_, i) => i + 1).map(val => ( <option key={val} value={val}>+{val}</option> ))} </select> </div> </td> ); }) ))} </tr> ))}
+                        {employees.map(e => ( <tr key={e.id}> <td>{e.name}</td> {config.duties.map(d => ( d.shift_config.map((s, idx) => { 
+                            const isExcluded = s.excluded_ids?.includes(e.id); 
+                            // --- FIX: USE STRING KEY ---
+                            const handicap = s.handicaps?.[String(e.id)] || 0; 
+                            return ( <td key={`${d.id}-${idx}`} style={{textAlign:'center', background: isExcluded ? '#ffebee' : 'transparent'}}> <div style={{display:'flex', gap:5, justifyContent:'center', alignItems:'center'}}> <input type="checkbox" title="Exclude" checked={!isExcluded} onChange={()=>toggleExclusion(d.id, idx, e.id)} /> <select style={{width:45, padding:0, fontWeight: handicap > 0 ? 'bold' : 'normal', color: handicap > 0 ? 'red' : 'inherit'}} value={handicap} onChange={(ev)=>updateHandicap(d.id, idx, e.id, ev.target.value)} > <option value="0">-</option> {Array.from({length: 30}, (_, i) => i + 1).map(val => ( <option key={val} value={val}>+{val}</option> ))} </select> </div> </td> ); }) ))} </tr> ))}
                     </tbody>
                 </table>
                 </div>
