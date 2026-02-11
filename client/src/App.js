@@ -11,7 +11,7 @@ import {
 } from './components/Layout';
 import { MFAVerify } from './components/MFAVerify'; 
 import { Profile } from './pages/Profile';
-import AgentsApp from './components/AgentsApp'; // <--- 1. NEW IMPORT
+import AgentsApp from './components/AgentsApp'; 
 
 // --- IMPORT APPS ---
 import { FuelApp } from './apps/FuelApp';
@@ -20,6 +20,28 @@ import { HomeApp } from './apps/HomeApp';
 import { DirectoryApp } from './apps/DirectoryApp'; 
 import { ServicesApp } from './apps/ServicesApp';
 import { AccountManager } from './apps/AccountManager';
+
+// --- TRANSLATIONS FOR APP.JS MODALS ---
+const modalTranslations = {
+    el: {
+        contactTitle: "Επικοινωνία",
+        emailLabel: "Email Τελωνείου:",
+        dirTitle: "Τηλεφωνικός Κατάλογος",
+        noPhones: "Κανένα τηλέφωνο",
+        loading: "Φόρτωση...",
+        fabPhone: "Τηλεφωνικός Κατάλογος",
+        fabEmail: "Email Επικοινωνίας"
+    },
+    en: {
+        contactTitle: "Contact",
+        emailLabel: "Customs Email:",
+        dirTitle: "Phone Directory",
+        noPhones: "No numbers",
+        loading: "Loading...",
+        fabPhone: "Phone Directory",
+        fabEmail: "Contact Email"
+    }
+};
 
 // --- SUPERVISOR ICON COMPONENT ---
 export const SupervisorIcon = () => (
@@ -36,6 +58,10 @@ function App() {
     const [userProfile, setUserProfile] = useState(null); 
     const [loading, setLoading] = useState(true);
     const [profileLoading, setProfileLoading] = useState(false); 
+
+    // --- LANGUAGE STATE (LIFTED UP) ---
+    const [language, setLanguage] = useState('el');
+    const t = modalTranslations[language];
 
     // --- GLOBAL MODAL STATES ---
     const [showDirectory, setShowDirectory] = useState(false);
@@ -162,7 +188,7 @@ function App() {
         return (
             <div style={{height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#002F6C'}}>
                 <div style={{width: 40, height: 40, border: '4px solid #eee', borderTop: '4px solid #002F6C', borderRadius: '50%', animation: 'spin 1s linear infinite', marginBottom: 20}}></div>
-                <h2>Φόρτωση Συστήματος...</h2>
+                <h2>{t.loading}</h2>
                 <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
             </div>
         );
@@ -170,7 +196,8 @@ function App() {
 
     const renderContent = () => {
         switch (view) {
-            case 'welcome': return <WelcomePage onNavigate={navigate} />;
+            // PASS LANGUAGE PROPS TO WELCOME PAGE
+            case 'welcome': return <WelcomePage onNavigate={navigate} language={language} setLanguage={setLanguage} />;
             case 'announcements': return <AnnouncementsPage onNavigate={navigate} />;
             
             case 'login': return <Login onBack={() => navigate('welcome')} />; 
@@ -203,7 +230,7 @@ function App() {
             // 3. ADD THE CASE FOR THE NEW APP
             case 'agents_app': return <AgentsApp user={activeUser} onExit={() => setView('portal')} />;
             
-            default: return <WelcomePage onNavigate={navigate} />;
+            default: return <WelcomePage onNavigate={navigate} language={language} setLanguage={setLanguage} />;
         }
     };
 
@@ -214,9 +241,9 @@ function App() {
             {/* FLOATING ACTION BUTTONS */}
             <div className="fab-container">
                 <div className="split-rect-btn">
-                    <button onClick={openDirectory} className="btn-half left" title="Τηλεφωνικός Κατάλογος"><Phone size={20} strokeWidth={2.5} /></button>
+                    <button onClick={openDirectory} className="btn-half left" title={t.fabPhone}><Phone size={20} strokeWidth={2.5} /></button>
                     <div className="btn-divider"></div>
-                    <button onClick={() => setShowEmail(true)} className="btn-half right" title="Email Επικοινωνίας"><Mail size={20} strokeWidth={2.5} /></button>
+                    <button onClick={() => setShowEmail(true)} className="btn-half right" title={t.fabEmail}><Mail size={20} strokeWidth={2.5} /></button>
                 </div>
             </div>
 
@@ -226,12 +253,12 @@ function App() {
                     <div className="modal-content small-modal" onClick={e => e.stopPropagation()}>
                         <div className="modal-header">
                             <h2 style={{margin:0, color:'#002F6C', display:'flex', alignItems:'center', gap:10}}>
-                                <Mail size={24} /> Επικοινωνία
+                                <Mail size={24} /> {t.contactTitle}
                             </h2>
                         </div>
-                        <div style={{ padding: '40px 30px', textAlign: 'center', background:'#f8f9fa' }}>
-                            <p style={{marginBottom:10, fontSize:'1.1rem', color:'#666'}}>Email Τελωνείου:</p>
-                            <a href="mailto:tel.chanion@aade.gr" style={{ fontSize: '1.6rem', color: '#002F6C', textDecoration: 'none', fontWeight: '700', borderBottom: '2px solid #2196F3', paddingBottom: 2 }}>
+                        <div style={{ padding: '20px 30px 30px 30px', textAlign: 'center', background:'#f8f9fa' }}>
+                            <p style={{margin:5, fontSize:'1.1rem', color:'#666'}}>{t.emailLabel}</p>
+                            <a href="mailto:tel.chanion@aade.gr" style={{ fontSize: '1.3rem', color: '#002F6C', textDecoration: 'none', fontWeight: '700', borderBottom: '2px solid #2196F3', paddingBottom: 2 }}>
                                 tel.chanion@aade.gr
                             </a>
                         </div>
@@ -244,9 +271,14 @@ function App() {
                 <div className="modal-overlay" onClick={() => setShowDirectory(false)}>
                     <div className="modal-content directory-modal" onClick={e => e.stopPropagation()}>
                         <div className="modal-header">
-                            <h2 style={{margin:0, color:'#002F6C', display:'flex', alignItems:'center', gap:10}}>
-                                <Phone size={24} /> Τηλεφωνικός Κατάλογος
-                            </h2>
+                            <div style={{textAlign: 'center'}}>
+                                <h2 style={{margin:0, color:'#002F6C', display:'flex', alignItems:'center', justifyContent: 'center', gap:10}}>
+                                    <Phone size={24} /> {t.dirTitle}
+                                </h2>
+                                <a href="tel:2821345330" style={{display: 'block', marginTop: 5, color: '#555', fontSize: '1.2rem', textDecoration: 'none', fontWeight: 600}}>
+                                    2821345330
+                                </a>
+                            </div>
                         </div>
                         <div className="modal-body">
                             {directoryData.length > 0 ? (
@@ -264,20 +296,20 @@ function App() {
                                                         {dept.phones.length > 0 ? (
                                                             dept.phones.map(p => (
                                                                 <div key={p.id} className="phone-row">
-                                                                    <div className="number-anchor">
-                                                                        {p.is_supervisor && (<div className="supervisor-badge-abs"><SupervisorIcon /></div>)}
-                                                                        <span className="phone-number">{p.number}</span>
-                                                                    </div>
+                                                                        <div className="number-anchor">
+                                                                            {p.is_supervisor && (<div className="supervisor-badge-abs"><SupervisorIcon /></div>)}
+                                                                            <span className="phone-number">{p.number}</span>
+                                                                        </div>
                                                                 </div>
                                                             ))
-                                                        ) : <div className="empty-msg">Κανένα τηλέφωνο</div>}
+                                                        ) : <div className="empty-msg">{t.noPhones}</div>}
                                                     </div>
                                                 )}
                                             </div>
                                         );
                                     })}
                                 </div>
-                            ) : <div className="loading-state"><div className="spinner"></div><p>Φόρτωση...</p></div>}
+                            ) : <div className="loading-state"><div className="spinner"></div><p>{t.loading}</p></div>}
                         </div>
                     </div>
                 </div>

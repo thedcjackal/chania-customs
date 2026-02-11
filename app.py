@@ -111,8 +111,11 @@ def get_db():
         return None
 
 # ==========================================
-# 4. AUTH MIDDLEWARE
+# 4. AUTH MIDDLEWARE (WITH CACHING)
 # ==========================================
+# Cache structure: { token: { 'auth_id': str, 'db_user': dict, 'expires': float } }
+TOKEN_CACHE = {}
+
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -126,8 +129,19 @@ def require_auth(f):
         if not token:
             return jsonify({"error": "Missing Session"}), 401
         
+        # --- CACHE CHECK ---
+        # If token is valid in cache, skip Supabase call to prevent timeouts
+        now = datetime.datetime.now().timestamp()
+        if token in TOKEN_CACHE:
+            cached = TOKEN_CACHE[token]
+            if cached['expires'] > now:
+                g.auth_id = cached['auth_id']
+                g.current_user = cached['db_user']
+                return f(current_user=g.current_user, *args, **kwargs)
+
         try:
             if supabase:
+                # This call is what usually times out
                 user_response = supabase.auth.get_user(token)
                 g.auth_id = user_response.user.id
             else:
@@ -137,20 +151,31 @@ def require_auth(f):
             if conn:
                 try:
                     cur = conn.cursor(cursor_factory=RealDictCursor)
-                    cur.execute("SELECT role FROM users WHERE auth_id = %s", (g.auth_id,))
+                    cur.execute("SELECT id, role, auth_id FROM users WHERE auth_id = %s", (g.auth_id,))
                     u_data = cur.fetchone()
-                    g.current_user_role = u_data['role'] if u_data else 'user'
+                    g.current_user = u_data if u_data else {'role': 'user', 'auth_id': g.auth_id, 'id': 0}
+                    
+                    # --- UPDATE CACHE ---
+                    # Cache successful auth for 60 seconds
+                    TOKEN_CACHE[token] = {
+                        'auth_id': g.auth_id,
+                        'db_user': g.current_user,
+                        'expires': now + 60 
+                    }
                 finally:
                     conn.close()
             else:
-                g.current_user_role = 'user'
+                g.current_user = {'role': 'user', 'auth_id': g.auth_id, 'id': 0}
         except Exception as e:
             logger.warning(f"Auth failed: {e}")
             return jsonify({"error": "Session Expired"}), 401
 
-        return f(current_user={'role': g.current_user_role, 'auth_id': g.auth_id}, *args, **kwargs)
+        return f(current_user=g.current_user, *args, **kwargs)
     return decorated
 
+# ==========================================
+# 5. HELPER FUNCTIONS
+# ==========================================
 # ==========================================
 # 5. HELPER FUNCTIONS
 # ==========================================
@@ -158,17 +183,28 @@ def validate_input(data, required_fields):
     if not data: return False, "No data provided"
     for field, rules in required_fields.items():
         value = data.get(field)
+        
+        # Check for required fields
         if not rules.get('optional', False) and (value is None or value == ""):
             return False, f"Field '{field}' is required"
+        
+        # Skip type checks if optional field is missing
         if rules.get('optional', False) and (value is None or value == ""):
             continue
+        
         expected_type = rules.get('type')
         if expected_type and not isinstance(value, expected_type):
-            return False, f"Field '{field}' must be {expected_type.__name__}"
+            # FIX: Handle tuple of types (e.g., (int, float)) for error message
+            if isinstance(expected_type, tuple):
+                type_names = " or ".join([t.__name__ for t in expected_type])
+                return False, f"Field '{field}' must be {type_names}"
+            else:
+                return False, f"Field '{field}' must be {expected_type.__name__}"
+        
         if 'regex' in rules and isinstance(value, str) and not re.match(rules['regex'], value):
             return False, f"Field '{field}' has invalid format"
+            
     return True, None
-
 # ==========================================
 # 7. ROUTES
 # ==========================================
@@ -669,6 +705,35 @@ def clear_schedule(current_user):
     finally:
         conn.close()
 
+@app.route('/api/fuel/defaults', methods=['GET'])
+@require_auth
+def get_fuel_defaults(current_user):
+    conn = get_db()
+    if not conn: return jsonify({"error": "DB Connection Failed"}), 500
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Fetch defaults for the authenticated user
+        cur.execute("""
+            SELECT vessel_name, fuel_type, supply_company, payment_method, mrn, location_x, location_y
+            FROM fuel_user_defaults 
+            WHERE user_id = %s
+        """, (g.auth_id,))
+        rows = cur.fetchall()
+        
+        # Convert to a dictionary keyed by vessel name for fast lookup
+        defaults_map = {}
+        for r in rows:
+            defaults_map[r['vessel_name']] = {
+                'fuel_type': r['fuel_type'],
+                'supply_company': r['supply_company'],
+                'payment_method': r['payment_method'],
+                'mrn': r['mrn'],
+                'location': {'x': r['location_x'], 'y': r['location_y']}
+            }
+        return jsonify(defaults_map)
+    finally:
+        conn.close()
+
 @app.route('/api/reservations', methods=['GET', 'POST', 'PUT', 'DELETE'])
 @require_auth
 def reservations(current_user):
@@ -676,6 +741,39 @@ def reservations(current_user):
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
+        # --- 1. ROBUST MIGRATION (Runs on every request to ensure DB is sync) ---
+        # We commit immediately after these changes to ensure they persist before the SELECT/INSERT
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS reservations (
+                    id SERIAL PRIMARY KEY,
+                    date DATE,
+                    vessel TEXT,
+                    user_company TEXT,
+                    supply_company TEXT,
+                    fuel_type TEXT,
+                    quantity INTEGER,
+                    payment_method TEXT,
+                    mrn TEXT,
+                    status TEXT,
+                    flags TEXT[], 
+                    location_x FLOAT,
+                    location_y FLOAT,
+                    assigned_employee INTEGER,
+                    user_name TEXT
+                )
+            """)
+            # Add columns individually and commit to avoid block failures
+            cur.execute("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS user_name TEXT")
+            cur.execute("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS location_x FLOAT")
+            cur.execute("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS location_y FLOAT")
+            cur.execute("ALTER TABLE reservations ADD COLUMN IF NOT EXISTS assigned_employee INTEGER")
+            conn.commit() # <--- CRITICAL COMMIT
+        except Exception as e:
+            conn.rollback()
+            print(f"Migration Warning: {e}") 
+
+        # --- 2. GET REQUEST ---
         if request.method == 'GET':
             query = "SELECT * FROM reservations WHERE 1=1"
             params = []
@@ -689,6 +787,8 @@ def reservations(current_user):
             rows = cur.fetchall()
             for r in rows: r['date'] = str(r['date'])
             return jsonify(rows)
+        
+        # --- 3. POST REQUEST ---
         if request.method == 'POST':
             r = request.json
             is_valid, error = validate_input(r, {
@@ -701,21 +801,54 @@ def reservations(current_user):
                 'assigned_employee': {'type': int, 'optional': True}
             })
             if not is_valid: return jsonify({"error": error}), 400
+            
+            # Insert Reservation
             cur.execute("""
-                INSERT INTO reservations (date, vessel, user_company, supply_company, fuel_type, quantity, payment_method, mrn, status, flags, location_x, location_y, assigned_employee)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """, (r.get('date'), r.get('vessel'), r.get('user_company'), r.get('supply_company'), r.get('fuel_type'), r.get('quantity'), r.get('payment_method'), r.get('mrn'), 'OK', r.get('flags', []), r.get('location', {}).get('x',0), r.get('location', {}).get('y',0), r.get('assigned_employee')))
+                INSERT INTO reservations (date, vessel, user_company, supply_company, fuel_type, quantity, payment_method, mrn, status, flags, location_x, location_y, assigned_employee, user_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            """, (
+                r.get('date'), r.get('vessel'), r.get('user_company'), r.get('supply_company'), r.get('fuel_type'), 
+                r.get('quantity'), r.get('payment_method'), r.get('mrn'), 'OK', r.get('flags', []), 
+                r.get('location', {}).get('x', 0), r.get('location', {}).get('y', 0), 
+                r.get('assigned_employee'), r.get('user_name', '')
+            ))
+            
+            # Auto-save defaults
+            try:
+                cur.execute("""
+                    INSERT INTO fuel_user_defaults (user_id, vessel_name, fuel_type, supply_company, payment_method, mrn, location_x, location_y, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id, vessel_name) 
+                    DO UPDATE SET 
+                        fuel_type = EXCLUDED.fuel_type,
+                        supply_company = EXCLUDED.supply_company,
+                        payment_method = EXCLUDED.payment_method,
+                        mrn = EXCLUDED.mrn,
+                        location_x = EXCLUDED.location_x,
+                        location_y = EXCLUDED.location_y,
+                        updated_at = NOW()
+                """, (
+                    g.auth_id,
+                    r.get('vessel'),
+                    r.get('fuel_type'),
+                    r.get('supply_company'),
+                    r.get('payment_method'),
+                    r.get('mrn'),
+                    r.get('location', {}).get('x', 0),
+                    r.get('location', {}).get('y', 0)
+                ))
+            except Exception as e:
+                print(f"Defaults save warning: {e}")
+
             conn.commit()
             return jsonify({"success":True})
+        
+        # --- 4. PUT REQUEST ---
         if request.method == 'PUT':
             rid = request.json.get('id')
             if not rid: return jsonify({"error": "ID required"}), 400
             updates = request.json.get('updates', {})
-            ALLOWED_COLS = {
-                'vessel', 'user_company', 'supply_company', 'fuel_type', 
-                'quantity', 'payment_method', 'mrn', 'status', 'assigned_employee',
-                'flags', 'location' 
-            }
+            ALLOWED_COLS = {'vessel', 'user_company', 'supply_company', 'fuel_type', 'quantity', 'payment_method', 'mrn', 'status', 'assigned_employee', 'flags', 'location'}
             fields = []; vals = []
             for k, v in updates.items():
                 if k not in ALLOWED_COLS: continue  
@@ -729,12 +862,178 @@ def reservations(current_user):
                 cur.execute(f"UPDATE reservations SET {','.join(fields)} WHERE id=%s", tuple(vals))
                 conn.commit()
             return jsonify({"success": True})
+
+        # --- 5. DELETE REQUEST ---
         if request.method == 'DELETE':
             cur.execute("DELETE FROM reservations WHERE id = %s", (request.args.get('id'),))
             conn.commit()
             return jsonify({"success": True})
+
+    except Exception as e:
+        conn.rollback()
+        # Log the specific DB error to the console
+        print(f"DB Error in /api/reservations: {str(e)}")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+@app.route('/api/user/vessels', methods=['POST'])
+@require_auth
+def manage_user_vessels(current_user):
+    conn = get_db()
+    if not conn: return jsonify({"error": "DB Connection Failed"}), 500
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        data = request.json
+        target_user_id = data.get('id')
+        new_vessels = data.get('vessels', [])
+
+        # --- SECURITY CHECK ---
+        cur.execute("SELECT auth_id, role FROM users WHERE id = %s", (target_user_id,))
+        target_user = cur.fetchone()
+
+        if not target_user:
+            return jsonify({"error": "User not found"}), 404
+
+        is_admin = current_user['role'] in ['admin', 'root_admin']
+        is_owner = target_user['auth_id'] == current_user['auth_id']
+
+        if not (is_admin or is_owner):
+            return jsonify({"error": "Unauthorized"}), 403
+
+        # --- UPDATE ---
+        cur.execute("""
+            UPDATE users 
+            SET vessels = %s 
+            WHERE id = %s 
+            RETURNING vessels
+        """, (new_vessels, target_user_id))
+        
+        updated_row = cur.fetchone()
+        conn.commit()
+        
+        return jsonify({
+            "success": True, 
+            "vessels": updated_row['vessels'] if updated_row else []
+        })
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Vessel update error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# --- VESSEL MAP (For Admin Reservation Form Dropdown) ---
+@app.route('/api/vessel_map', methods=['GET'])
+@require_auth
+def vessel_map(current_user):
+    """Returns a mapping of fuel_user companies to their vessels and defaults for admin dropdown."""
+    conn = get_db()
+    if not conn: return jsonify({"error": "DB Connection Failed"}), 500
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # Get all fuel_users with their company, vessels, and auth_id
+        cur.execute("""
+            SELECT auth_id, company, vessels 
+            FROM users 
+            WHERE role = 'fuel_user' AND company IS NOT NULL AND company != ''
+        """)
+        users = cur.fetchall()
+        
+        # Build mapping: { "Company Name": { "vessels": ["Vessel1", ...], "defaults": { "Vessel1": {...} } }, ... }
+        result_map = {}
+        for u in users:
+            company = u.get('company', '')
+            vessels = u.get('vessels', [])
+            auth_id = u.get('auth_id', '')
+            
+            if company:
+                if company not in result_map:
+                    result_map[company] = {"vessels": [], "defaults": {}}
+                
+                if vessels:
+                    # Merge vessels, avoiding duplicates
+                    for v in vessels:
+                        if v and v not in result_map[company]["vessels"]:
+                            result_map[company]["vessels"].append(v)
+                
+                # Fetch fuel_user_defaults for this user
+                if auth_id:
+                    cur.execute("""
+                        SELECT vessel_name, fuel_type, supply_company, payment_method, mrn, location_x, location_y
+                        FROM fuel_user_defaults 
+                        WHERE user_id = %s
+                    """, (auth_id,))
+                    defaults_rows = cur.fetchall()
+                    for d in defaults_rows:
+                        vessel_name = d.get('vessel_name', '')
+                        if vessel_name:
+                            result_map[company]["defaults"][vessel_name] = {
+                                'fuel_type': d.get('fuel_type'),
+                                'supply_company': d.get('supply_company'),
+                                'payment_method': d.get('payment_method'),
+                                'mrn': d.get('mrn'),
+                                'location': {'x': d.get('location_x'), 'y': d.get('location_y')}
+                            }
+        
+        return jsonify(result_map)
+    except Exception as e:
+        logger.error(f"Vessel map error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# --- RESERVATION COUNT CHECK (For limit warning) ---
+@app.route('/api/reservation_count', methods=['GET'])
+@require_auth
+def reservation_count(current_user):
+    """Returns the count of reservations for a date and whether it's over the limit."""
+    conn = get_db()
+    if not conn: return jsonify({"error": "DB Connection Failed"}), 500
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        date = request.args.get('date')
+        if not date:
+            return jsonify({"error": "Date parameter required"}), 400
+        
+        # Get count of reservations for this date
+        cur.execute("SELECT COUNT(*) as count FROM reservations WHERE date = %s", (date,))
+        count_result = cur.fetchone()
+        count = count_result['count'] if count_result else 0
+        
+        # Get settings to find limit for this day
+        cur.execute("SELECT weekly_schedule FROM app_settings WHERE id = 1")
+        settings_row = cur.fetchone()
+        weekly_schedule = settings_row.get('weekly_schedule', {}) if settings_row else {}
+        
+        # Get day name in Greek
+        import datetime
+        date_obj = datetime.datetime.strptime(date, '%Y-%m-%d')
+        days_greek = ["Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"]
+        day_name = days_greek[date_obj.weekday()]
+        
+        day_config = weekly_schedule.get(day_name, {})
+        limit = day_config.get('limit')  # May be None if no limit set
+        is_open = day_config.get('open', True)
+        
+        is_over_limit = False
+        if limit is not None and count >= limit:
+            is_over_limit = True
+        
+        return jsonify({
+            "date": date,
+            "count": count,
+            "limit": limit,
+            "is_over_limit": is_over_limit,
+            "is_open": is_open
+        })
+    except Exception as e:
+        logger.error(f"Reservation count error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 
 @app.route('/api/daily_status', methods=['GET','POST'])
 @require_auth
