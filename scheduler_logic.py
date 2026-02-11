@@ -503,7 +503,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         for s in history+schedule:
             if dt.strptime(s['date'],'%Y-%m-%d').date() < sk_win_start: continue
             d_o = next((d for d in duties if d['id']==int(s['duty_id'])),None)
-            if not d_o or d_o.get('is_special') or d_o.get('is_off_balance'): continue
+            if not d_o or d_o.get('is_weekly') or d_o.get('is_special') or d_o.get('is_off_balance'): continue
             if dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6]: sk[int(s['employee_id'])] += 1
         
         s_sk = sorted(sk.items(), key=lambda x:x[1])
@@ -517,10 +517,10 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 if sk[max_id] - sk[min_id] <= 1: continue
                 
                 max_we = [s for s in schedule if int(s['employee_id'])==max_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6] and not s.get('manually_locked')]
-                max_we = [s for s in max_we if not any(d['id']==int(s['duty_id']) and (d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+                max_we = [s for s in max_we if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
                 
                 min_wd = [s for s in schedule if int(s['employee_id'])==min_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() not in [5,6] and not s.get('manually_locked')]
-                min_wd = [s for s in min_wd if not any(d['id']==int(s['duty_id']) and (d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+                min_wd = [s for s in min_wd if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
                 
                 random.shuffle(max_we); random.shuffle(min_wd)
                 for we in max_we:
