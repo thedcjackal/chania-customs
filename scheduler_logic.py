@@ -210,8 +210,8 @@ def calculate_db_balance(start_str=None, end_str=None):
             stats[eid]['total'] += 1
             stats[eid]['effective_total'] += 1 
             
-            # SK Score (Weekends for Daily only)
-            if not duty.get('is_special') and s_date.weekday() in [5,6]:
+# SK Score (Weekends for Weekly and Daily duties)
+            if not duty.get('is_special') and not duty.get('is_off_balance') and s_date.weekday() in [5,6]:
                 stats[eid]['sk_score'] += 1
 
         except: pass
@@ -448,13 +448,13 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 for shift in donor_shifts:
                     s_date = dt.strptime(shift['date'], '%Y-%m-%d').date()
                     d_obj = next((d for d in duties if d['id']==int(shift['duty_id'])),None)
-                    conf = d_obj['shift_config'][int(shift.get('shift_index',0))]
+                    conf = d_obj.get('shift_config', [{}])[int(shift.get('shift_index',0))] if d_obj else {}
                     
                     if conf.get('is_within_hours') and conf.get('default_employee_id')==donor_id and not is_scoreable_day(s_date, special_dates_set): 
                         if stagnation_count >= stagnation_limit: diagnostics.append(f"Βάρδια {shift['date']}: Κλειδωμένο Ωράριο")
                         continue
                     
-                    if d_obj.get('is_weekly'): 
+                    if d_obj and d_obj.get('is_weekly'): 
                         if stagnation_count >= stagnation_limit: diagnostics.append(f"Βάρδια {shift['date']}: Κλειδωμένη Εβδομαδιαία")
                         continue
                     
@@ -503,7 +503,7 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         for s in history+schedule:
             if dt.strptime(s['date'],'%Y-%m-%d').date() < sk_win_start: continue
             d_o = next((d for d in duties if d['id']==int(s['duty_id'])),None)
-            if not d_o or d_o.get('is_weekly') or d_o.get('is_special') or d_o.get('is_off_balance'): continue
+            if not d_o or d_o.get('is_special') or d_o.get('is_off_balance'): continue
             if dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6]: sk[int(s['employee_id'])] += 1
         
         s_sk = sorted(sk.items(), key=lambda x:x[1])
@@ -517,10 +517,10 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 if sk[max_id] - sk[min_id] <= 1: continue
                 
                 max_we = [s for s in schedule if int(s['employee_id'])==max_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6] and not s.get('manually_locked')]
-                max_we = [s for s in max_we if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+                max_we = [s for s in max_we if not any(d['id']==int(s['duty_id']) and (d.get('is_special') or d.get('is_off_balance')) for d in duties)]
                 
                 min_wd = [s for s in schedule if int(s['employee_id'])==min_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() not in [5,6] and not s.get('manually_locked')]
-                min_wd = [s for s in min_wd if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
+                min_wd = [s for s in min_wd if not any(d['id']==int(s['duty_id']) and (d.get('is_special') or d.get('is_off_balance')) for d in duties)]
                 
                 random.shuffle(max_we); random.shuffle(min_wd)
                 for we in max_we:
