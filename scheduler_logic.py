@@ -189,6 +189,9 @@ def calculate_db_balance(start_str=None, end_str=None):
                     if is_scoreable_day(s_date, special_dates_set):
                         stats[eid]['total'] += 1
                         stats[eid]['effective_total'] += 1
+                        # SK Score: weekly duties on scoreable days count
+                        if not duty.get('is_special'):
+                            stats[eid]['sk_score'] += 1
                 
                 continue # Done with Weekly
 
