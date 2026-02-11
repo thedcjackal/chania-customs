@@ -4,12 +4,12 @@ import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import { API_URL } from '../config';
 import { AppHeader, formatDate } from '../components/Layout';
-import { UserManager, ReferenceManager } from '../components/AdminTools';
+
 import {
     Plus, Calendar, Truck, Anchor,
-    CreditCard, MapPin, Printer, Lock, Unlock,
-    Trash2, Edit2, CheckCircle, AlertCircle, AlertTriangle, FileText, User, Users, Settings, Droplet, Building2, X, Maximize, Loader, ChevronDown, Search,
-    Hash, Coins, DoorOpen
+    CreditCard, Printer, Lock, Unlock,
+    Trash2, Edit2, AlertCircle, AlertTriangle, FileText, User, Users, Settings, Droplet, Building2, X, Maximize, Loader, ChevronDown, Search,
+    Hash, DoorOpen
 } from 'lucide-react';
 
 // --- STYLES HELPER ---
@@ -1105,17 +1105,17 @@ const FuelReferenceManager = ({ type, title, placeholder, icon: Icon }) => {
     const [newItem, setNewItem] = useState('');
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        load();
-    }, [type]);
-
-    const load = () => {
+    const load = useCallback(() => {
         setLoading(true);
         api.get(`${API_URL}/admin/reference`)
             .then(res => setList(res.data[type] || []))
             .catch(err => console.error("Ref load error", err))
             .finally(() => setLoading(false));
-    };
+    }, [type]);
+
+    useEffect(() => {
+        load();
+    }, [load]);
 
     const add = async () => {
         if (!newItem) return;
