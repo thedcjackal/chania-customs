@@ -211,7 +211,7 @@ def calculate_db_balance(start_str=None, end_str=None):
             stats[eid]['effective_total'] += 1 
             
 # SK Score (Weekends for Weekly and Daily duties)
-            if not duty.get('is_special') and not duty.get('is_off_balance') and s_date.weekday() in [5,6]:
+            if not duty.get('is_special') and not duty.get('is_off_balance') and is_scoreable_day(s_date, special_dates_set):
                 stats[eid]['sk_score'] += 1
 
         except: pass
@@ -276,10 +276,12 @@ def run_auto_scheduler_logic(db, start_date, end_date):
     def is_user_busy(eid, check_date, current_schedule, ignore_yesterday=False):
         d_str = check_date.strftime('%Y-%m-%d')
         prev_str = (check_date - timedelta(days=1)).strftime('%Y-%m-%d')
+        next_str = (check_date + timedelta(days=1)).strftime('%Y-%m-%d')
         for s in current_schedule + history:
             if int(s['employee_id']) == eid:
                 if s['date'] == d_str: return "Εργάζεται"
                 if not ignore_yesterday and s['date'] == prev_str: return "Εργάστηκε Χθες"
+                if s['date'] == next_str: return "Εργάζεται Αύριο"
         return False
 
     def get_q(key, excluded_ids=[]):
@@ -503,8 +505,8 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         for s in history+schedule:
             if dt.strptime(s['date'],'%Y-%m-%d').date() < sk_win_start: continue
             d_o = next((d for d in duties if d['id']==int(s['duty_id'])),None)
-            if not d_o or d_o.get('is_weekly') or d_o.get('is_special') or d_o.get('is_off_balance'): continue
-            if dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6]: sk[int(s['employee_id'])] += 1
+            if not d_o or d_o.get('is_special') or d_o.get('is_off_balance'): continue
+            if is_scoreable_day(s['date'], special_dates_set): sk[int(s['employee_id'])] += 1
         
         s_sk = sorted(sk.items(), key=lambda x:x[1])
         if s_sk[-1][1] - s_sk[0][1] <= 1: break
