@@ -210,7 +210,7 @@ def calculate_db_balance(start_str=None, end_str=None):
             stats[eid]['total'] += 1
             stats[eid]['effective_total'] += 1 
             
-# SK Score (Weekends for Weekly and Daily duties)
+            # SK Score (Weekends for Weekly and Daily duties)
             if not duty.get('is_special') and not duty.get('is_off_balance') and is_scoreable_day(s_date, special_dates_set):
                 stats[eid]['sk_score'] += 1
 
@@ -518,10 +518,10 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 min_id = s_sk[j][0]
                 if sk[max_id] - sk[min_id] <= 1: continue
                 
-                max_we = [s for s in schedule if int(s['employee_id'])==max_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() in [5,6] and not s.get('manually_locked')]
+                max_we = [s for s in schedule if int(s['employee_id'])==max_id and is_scoreable_day(s['date'], special_dates_set) and not s.get('manually_locked')]
                 max_we = [s for s in max_we if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
                 
-                min_wd = [s for s in schedule if int(s['employee_id'])==min_id and dt.strptime(s['date'],'%Y-%m-%d').date().weekday() not in [5,6] and not s.get('manually_locked')]
+                min_wd = [s for s in schedule if int(s['employee_id'])==min_id and not is_scoreable_day(s['date'], special_dates_set) and not s.get('manually_locked')]
                 min_wd = [s for s in min_wd if not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)]
                 
                 random.shuffle(max_we); random.shuffle(min_wd)
