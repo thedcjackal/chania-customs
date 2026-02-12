@@ -326,7 +326,8 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             
             chosen_id = None
             default_id = conf.get('default_employee_id')
-            needs_cover = is_scoreable_day(curr, special_dates_set) or not default_id or default_id in [int(x) for x in conf.get('excluded_ids',[])] or (default_id, d_str) in unavail_map or is_user_busy(default_id, curr, schedule, True)
+            default_excluded = default_id in [int(x) for x in conf.get('excluded_ids',[])]
+            needs_cover = not default_id or (default_id, d_str) in unavail_map or is_user_busy(default_id, curr, schedule, True) or (is_scoreable_day(curr, special_dates_set) and default_excluded)
             if not needs_cover: chosen_id = default_id
             if not chosen_id:
                 cq, nq = get_q(f"cover_{duty['id']}_{sh_idx}", [int(x) for x in conf.get('excluded_ids',[])])
