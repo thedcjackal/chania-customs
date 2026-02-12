@@ -141,12 +141,15 @@ The main scheduling algorithm. Takes the pre-loaded `db` dict and a date range.
 
 #### `is_user_busy(eid, check_date, current_schedule, ignore_yesterday=False)`
 Checks if an employee is busy on a given date by scanning `current_schedule + history`:
-- Returns `"Εργάζεται"` if the employee has **any** duty on `check_date`.
+- **Only considers normal and weekly duties** — off-balance and special duties are **ignored**.
+- Returns `"Εργάζεται"` if the employee has a (normal/weekly) duty on `check_date`.
 - Returns `"Εργάστηκε Χθες"` if the employee worked the **previous day** (unless `ignore_yesterday=True`).
 - Returns `"Εργάζεται Αύριο"` if the employee has a duty on the **next day**.
 - Returns `False` if available.
 
-This enforces the **1-0-1 rest rule**: no back-to-back duty days.
+This enforces the **1-0-1 rest rule**: no back-to-back duty days (for normal/weekly duties only).
+
+> **Note**: Off-balance and special duties do NOT block an employee from being assigned. An employee can work an off-balance or special duty on an adjacent day without triggering the busy check.
 
 #### `get_q(key, excluded_ids=[])`
 Retrieves the rotation queue for a given key:
@@ -263,9 +266,12 @@ Up to 200 iterations:
    - Find **min_wd**: min_id's shifts on **non-scoreable days** (not locked, not weekly/special/off-balance).
    - Try to **swap** a scoreable-day shift of max_id with a non-scoreable-day shift of min_id.
    - Only swap if neither employee is unavailable or busy on the swapped dates.
-5. If no swap is possible, stop.
+   - Try **all possible max/min pairs** before giving up.
+5. If no swap is possible across all pairs, log diagnostic info (available SK shifts, available weekday shifts) and stop.
 
 > **Key constraint**: Weekly, special, and off-balance duties are **never swapped** during SK balancing. They are included in the score but protected from being moved.
+>
+> **Diagnostics**: When no swap is found, the log shows the employee names, their SK scores, and how many swappable shifts each has, to help debug the issue.
 
 ---
 
@@ -311,7 +317,7 @@ return schedule, {
 | **Weekly Duty** | A duty assigned once per week to the same person (all 7 days) |
 | **Work-Hours** | A shift marked `is_within_hours`; has a `default_employee_id` who covers weekdays without scoring. The default employee is **always** assigned on weekdays even if excluded in Αναθέσεις; exclusion only affects scoreable days |
 | **Rotation Queue** | A FIFO queue that ensures fair round-robin assignment. `excluded_ids` fully removes non-default employees from the queue on all days |
-| **1-0-1 Rule** | No employee works two consecutive days (enforced by `is_user_busy`) |
+| **1-0-1 Rule** | No employee works two consecutive days of normal/weekly duties (enforced by `is_user_busy`). Off-balance and special duties are ignored |
 | **Protected Default** | The default employee for a work-hours shift is always assigned on weekdays (not scored). When enabled in Αναθέσεις, they also cover scoreable days. When disabled, scoreable days get a cover from the rotation queue |
 | **Special Duty** | A duty with `is_special` flag; excluded from all balancing phases |
 | **Manually Locked** | A schedule entry that cannot be moved or deleted by the scheduler |

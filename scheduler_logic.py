@@ -282,6 +282,9 @@ def run_auto_scheduler_logic(db, start_date, end_date):
         next_str = (check_date + timedelta(days=1)).strftime('%Y-%m-%d')
         for s in current_schedule + history:
             if int(s['employee_id']) == eid:
+                # Only normal and weekly duties count — off-balance and special are ignored
+                d_o = next((d for d in duties if d['id']==int(s['duty_id'])), None)
+                if d_o and (d_o.get('is_off_balance') or d_o.get('is_special')): continue
                 if s['date'] == d_str: return "Εργάζεται"
                 if not ignore_yesterday and s['date'] == prev_str: return "Εργάστηκε Χθες"
                 if s['date'] == next_str: return "Εργάζεται Αύριο"
@@ -538,7 +541,15 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                     if swapped: break
                 if swapped: break
             if swapped: break
-        if not swapped: break
+        if not swapped:
+            # Log diagnostics for why no swap was possible
+            max_id = s_sk[-1][0]; min_id = s_sk[0][0]
+            log(f"⚠️ SK: Δεν βρέθηκε εφικτή ανταλλαγή. {emp_map.get(max_id,'?')} (SK:{sk[max_id]}) ↔ {emp_map.get(min_id,'?')} (SK:{sk[min_id]})")
+            max_we_count = len([s for s in schedule if int(s['employee_id'])==max_id and is_scoreable_day(s['date'], special_dates_set) and not s.get('manually_locked') and not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)])
+            min_wd_count = len([s for s in schedule if int(s['employee_id'])==min_id and not is_scoreable_day(s['date'], special_dates_set) and not s.get('manually_locked') and not any(d['id']==int(s['duty_id']) and (d.get('is_weekly') or d.get('is_special') or d.get('is_off_balance')) for d in duties)])
+            log(f"   ├─ {emp_map.get(max_id,'?')}: {max_we_count} διαθέσιμες ΣΚ βάρδιες")
+            log(f"   └─ {emp_map.get(min_id,'?')}: {min_wd_count} διαθέσιμες καθημερινές βάρδιες")
+            break
     log(f"✅ Ολοκληρώθηκε (Έγιναν {sk_swaps} αλλαγές).")
 
     # --- PHASE 6: Double Duty ---
