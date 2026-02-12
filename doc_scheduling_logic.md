@@ -221,12 +221,13 @@ Uses a shared balancing engine (`run_balance`) that runs twice:
 
 #### `get_detailed_scores(target_duties)`
 Calculates per-employee scores for a set of duty IDs:
-- Adds **handicap** offsets from shift configs.
+- **Excludes employees** who are in the `excluded_ids` of **every** shift of **every** target duty (globally excluded). These employees don't appear in the score dict at all.
+- Adds **handicap** offsets from shift configs (for non-excluded employees only).
 - Iterates over `history + schedule` for the target duties.
 - **Lookback window**: from 2 months before `start_date` to `end_date`.
 - **Weekly duty** entries only count on scoreable days.
 - **Work-hours shifts** assigned to the default employee only count on scoreable days.
-- Returns `{employee_id: score}`.
+- Returns `{employee_id: score}` (excluded employees are omitted).
 
 #### `run_balance(target, label)`
 Iteratively moves shifts from over-assigned employees to under-assigned ones:
@@ -259,11 +260,12 @@ For every entry in `history + schedule` within the window:
 #### SK Swap Logic
 Up to 200 iterations:
 1. Calculate SK scores.
-2. Sort employees by SK score.
-3. If the difference between highest and lowest is ≤ 1, stop — balanced.
+2. SK scores are initialized only for employees who participate in **at least one shift** of normal duties (employees excluded from ALL normal-duty shifts via `excluded_ids` are removed from SK scoring entirely).
+3. If the entry is on a **scoreable day** → add 1 to the employee's SK score (only if they are in the score dict).
 4. For each over-assigned employee (`max_id`) and under-assigned employee (`min_id`):
    - Find **max_we**: max_id's shifts on **scoreable days** (not locked, not weekly/special/off-balance).
    - Find **min_wd**: min_id's shifts on **non-scoreable days** (not locked, not weekly/special/off-balance).
+   - Before swapping, verify that `min_id` is **not excluded** from max_id's specific shift, and `max_id` is **not excluded** from min_id's specific shift (`excluded_ids` per-shift check).
    - Try to **swap** a scoreable-day shift of max_id with a non-scoreable-day shift of min_id.
    - Only swap if neither employee is unavailable or busy on the swapped dates.
    - Try **all possible max/min pairs** before giving up.

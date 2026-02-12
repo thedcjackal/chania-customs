@@ -406,8 +406,17 @@ def run_auto_scheduler_logic(db, start_date, end_date):
     lookback_date = (start_date - relativedelta(months=2)).replace(day=1)
     
     def get_detailed_scores(target_duties):
-        sc = {e['id']: 0 for e in employees}
+        # Determine employees excluded from ALL shifts of ALL target duties
+        globally_excluded = set(e['id'] for e in employees)
+        for d in duties:
+            if d['id'] not in target_duties: continue
+            for conf in d.get('shift_config', [{}]):
+                exc = set(int(x) for x in conf.get('excluded_ids', []))
+                globally_excluded -= (set(e['id'] for e in employees) - exc)
+        
+        sc = {e['id']: 0 for e in employees if e['id'] not in globally_excluded}
         for e in employees:
+            if e['id'] in globally_excluded: continue
             eid_str = str(e['id'])
             for d in duties:
                 if d['id'] in target_duties:
@@ -421,7 +430,8 @@ def run_auto_scheduler_logic(db, start_date, end_date):
             if d_o.get('is_weekly') and not is_scoreable_day(s_d, special_dates_set): continue
             conf = d_o['shift_config'][int(s.get('shift_index',0))]
             if conf.get('is_within_hours') and conf.get('default_employee_id')==int(s['employee_id']) and not is_scoreable_day(s_d, special_dates_set): continue
-            sc[int(s['employee_id'])] += 1
+            eid = int(s['employee_id'])
+            if eid in sc: sc[eid] += 1
         return sc
 
     def run_balance(target, label):
@@ -507,13 +517,22 @@ def run_auto_scheduler_logic(db, start_date, end_date):
     sk_swaps = 0
     sk_win_start = (end_date - relativedelta(months=5)).replace(day=1)
     
+    # Determine employees excluded from ALL shifts of ALL normal duties
+    normal_duties = [d for d in duties if not d.get('is_off_balance') and not d.get('is_special')]
+    sk_excluded = set(e['id'] for e in employees)
+    for d in normal_duties:
+        for conf in d.get('shift_config', [{}]):
+            exc = set(int(x) for x in conf.get('excluded_ids', []))
+            sk_excluded -= (set(e['id'] for e in employees) - exc)
+    
     for _ in range(200):
-        sk = {e['id']: 0 for e in employees}
+        sk = {e['id']: 0 for e in employees if e['id'] not in sk_excluded}
         for s in history+schedule:
             if dt.strptime(s['date'],'%Y-%m-%d').date() < sk_win_start: continue
             d_o = next((d for d in duties if d['id']==int(s['duty_id'])),None)
             if not d_o or d_o.get('is_special') or d_o.get('is_off_balance'): continue
-            if is_scoreable_day(s['date'], special_dates_set): sk[int(s['employee_id'])] += 1
+            eid = int(s['employee_id'])
+            if eid in sk and is_scoreable_day(s['date'], special_dates_set): sk[eid] += 1
         
         s_sk = sorted(sk.items(), key=lambda x:x[1])
         if s_sk[-1][1] - s_sk[0][1] <= 1: break
@@ -533,8 +552,16 @@ def run_auto_scheduler_logic(db, start_date, end_date):
                 
                 random.shuffle(max_we); random.shuffle(min_wd)
                 for we in max_we:
+                    # Check min_id is not excluded from this specific shift
+                    we_d = next((d for d in duties if d['id']==int(we['duty_id'])), None)
+                    we_conf = we_d.get('shift_config', [{}])[int(we.get('shift_index',0))] if we_d else {}
+                    if min_id in [int(x) for x in we_conf.get('excluded_ids', [])]: continue
                     if (min_id, we['date']) in unavail_map or is_user_busy(min_id, dt.strptime(we['date'],'%Y-%m-%d').date(), schedule, False): continue
                     for wd in min_wd:
+                        # Check max_id is not excluded from this specific shift
+                        wd_d = next((d for d in duties if d['id']==int(wd['duty_id'])), None)
+                        wd_conf = wd_d.get('shift_config', [{}])[int(wd.get('shift_index',0))] if wd_d else {}
+                        if max_id in [int(x) for x in wd_conf.get('excluded_ids', [])]: continue
                         if (max_id, wd['date']) in unavail_map or is_user_busy(max_id, dt.strptime(wd['date'],'%Y-%m-%d').date(), schedule, False): continue
                         we['employee_id'] = min_id; wd['employee_id'] = max_id
                         swapped = True; sk_swaps += 1; break
