@@ -11,7 +11,7 @@ import re
 import logging
 import sys
 from flask import Flask, request, jsonify, g, make_response
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from datetime import datetime as dt, timedelta
@@ -545,6 +545,187 @@ def schedule_route(current_user):
     finally:
         conn.close()
 
+# --- QUEUE MANAGEMENT (ROOT ADMIN) ---
+@app.route('/api/admin/queue_history', methods=['GET', 'POST', 'DELETE'])
+@require_auth
+def queue_history_route(current_user):
+    if current_user.get('role') != 'root_admin':
+        return jsonify({"error": "Unauthorized"}), 403
+        
+    conn = get_db()
+    if not conn: return jsonify({"error": "DB Connection Failed"}), 500
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        month_str = request.args.get('month') # expected YYYY-MM
+        if not month_str: return jsonify({"error": "Month parameter required"}), 400
+        
+        # Normalize to YYYY-MM-01
+        try:
+            target_date = dt.strptime(month_str + '-01', '%Y-%m-%d').date()
+        except:
+             return jsonify({"error": "Invalid date format. Use YYYY-MM"}), 400
+
+        if request.method == 'GET':
+            cur.execute("SELECT rotation_queues, next_round_queues FROM scheduler_history_state WHERE month = %s", (target_date,))
+            row = cur.fetchone()
+            if row:
+                # Ensure it's not a string double-encoded
+                if isinstance(row['rotation_queues'], str):
+                     import json
+                     row['rotation_queues'] = json.loads(row['rotation_queues'])
+                if isinstance(row['next_round_queues'], str):
+                     row['next_round_queues'] = json.loads(row['next_round_queues'])
+                     
+                return jsonify(row)
+            else:
+                return jsonify({"rotation_queues": {}, "next_round_queues": {}})
+        
+        if request.method == 'POST':
+            data = request.json
+            rot_q = Json(data.get('rotation_queues', {}))
+            next_q = Json(data.get('next_round_queues', {}))
+            
+            cur.execute("""
+                INSERT INTO scheduler_history_state (month, rotation_queues, next_round_queues)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (month) DO UPDATE 
+                SET rotation_queues = EXCLUDED.rotation_queues,
+                    next_round_queues = EXCLUDED.next_round_queues
+            """, (target_date, rot_q, next_q))
+            conn.commit()
+            logger.info(f"Queue state updated for {target_date} by {current_user.get('email')}")
+            return jsonify({"success": True})
+            
+        if request.method == 'DELETE':
+            cur.execute("DELETE FROM scheduler_history_state WHERE month = %s", (target_date,))
+            conn.commit()
+            logger.info(f"Queue state DELETED for {target_date} by {current_user.get('email')}")
+            return jsonify({"success": True})
+            
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Queue History Error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/api/admin/queue_init', methods=['POST'])
+@require_auth
+def queue_init_route(current_user):
+    if current_user.get('role') != 'root_admin':
+        return jsonify({"error": "Unauthorized"}), 403
+        
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        month_str = request.json.get('month')
+        if not month_str: return jsonify({"error": "Month required"}), 400
+        
+        target_date = dt.strptime(month_str + '-01', '%Y-%m-%d').date()
+        
+        # 1. Fetch Configuration (Duties directly)
+        cur.execute("SELECT * FROM duties ORDER BY id")
+        duties = cur.fetchall()
+        
+        # 2. Fetch Active Employees
+        # List A: Least Senior First (for Normal/Weekly/SK queues)
+        cur.execute("SELECT id FROM users WHERE role = 'staff' ORDER BY seniority ASC, id ASC")
+        active_emps = [e['id'] for e in cur.fetchall()]
+        
+        # List B: Last Name ASC (for Off-Balance queues)
+        cur.execute("SELECT id FROM users WHERE role = 'staff' ORDER BY surname ASC, name ASC, id ASC")
+        active_off_emps = [e['id'] for e in cur.fetchall()]
+        
+        # 3. Generate Queues
+        rotation_queues = {}
+        next_round_queues = {} # Initialize empty
+        
+        # Helper to init a queue
+        def init_q(key, excluded_ids=[], source_list=None):
+            # Queue is all active employees (from source_list) MINUS excluded
+            if source_list is None: source_list = active_emps
+            q = [eid for eid in source_list if eid not in excluded_ids]
+            rotation_queues[key] = q
+            next_round_queues[key] = [] 
+
+        has_normal_daily = False
+
+        for d in duties:
+            # d is a RealDictRow, so we access by key
+            is_weekly = d.get('is_weekly', False)
+            is_off = d.get('is_off_balance', False)
+            is_special = d.get('is_special', False)
+            
+            if is_special: continue # Special duties usually don't have standard rotation queues
+
+            shifts = d.get('shifts_per_day', 1)
+            shift_configs = d.get('shift_config', [])
+            # shift_config in DB is a list of dicts.
+            # robust handle if it's None
+            if not shift_configs: shift_configs = []
+            
+            while len(shift_configs) < shifts: shift_configs.append({})
+            
+            for sh_idx in range(shifts):
+                conf = shift_configs[sh_idx]
+                excl = [int(x) for x in conf.get('excluded_ids', [])]
+                
+                if is_weekly:
+                    if is_off:
+                        # Weekly Off-Balance -> Use List B
+                        key = f"weekly_off_{d['id']}_{sh_idx}"
+                        init_q(key, excl, active_off_emps)
+                    else:
+                        # Weekly Normal -> Use List A
+                        key = f"weekly_{d['id']}_{sh_idx}"
+                        init_q(key, excl, active_emps)
+                else:
+                    if is_off:
+                        # Daily Off-Balance -> Use List B
+                        key = f"off_{d['id']}_{sh_idx}"
+                        init_q(key, excl, active_off_emps)
+                    else:
+                        # Daily Normal -> Use List A
+                        has_normal_daily = True
+                        key = f"normal_{d['id']}_sh_{sh_idx}"
+                        init_q(key, excl, active_emps)
+        
+        # Initialize Global SK Queue if needed
+        if has_normal_daily:
+            # SK All - standard for Saturday/Sunday normal shifts
+            # Requested: Populate TWO times with each employee
+            # (least senior, middle, most, least, middle, most)
+            # Since active_emps is already sorted by least senior first, we just concatenate it twice.
+            # Assuming no exclusions for sk_all globally.
+            sk_base = [eid for eid in active_emps] # Copy
+            rotation_queues["sk_all"] = sk_base + sk_base
+            next_round_queues["sk_all"] = []
+
+        # 4. Save to DB
+        rot_json = Json(rotation_queues)
+        nxt_json = Json(next_round_queues)
+        
+        cur.execute("""
+            INSERT INTO scheduler_history_state (month, rotation_queues, next_round_queues)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (month) DO UPDATE 
+            SET rotation_queues = EXCLUDED.rotation_queues,
+                next_round_queues = EXCLUDED.next_round_queues
+        """, (target_date, rot_json, nxt_json))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Queues initialized for {month_str} by {current_user.get('email')}")
+        return jsonify({"success": True})
+        
+    except Exception as e:
+        if 'conn' in locals() and conn: conn.rollback()
+        logger.error(f"Queue Init Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/services/run_scheduler', methods=['POST'])
 @require_auth
 def run_scheduler_route(current_user):
@@ -602,6 +783,17 @@ def run_scheduler_route(current_user):
             args_str = ','.join(cur.mogrify("(%s,%s,%s,%s,%s,%s)", x).decode('utf-8') for x in values)
             cur.execute("INSERT INTO schedule (date, duty_id, shift_index, employee_id, is_locked, manually_locked) VALUES " + args_str + " ON CONFLICT (date, duty_id, shift_index) DO NOTHING")
         cur.execute("UPDATE scheduler_state SET rotation_queues = %s, next_round_queues = %s WHERE id = 1", (Json(res_meta['rotation_queues']), Json(res_meta['next_round_queues'])))
+        
+        # --- PERSISTENCE: Save History State ---
+        try:
+            cur.execute("""
+                INSERT INTO scheduler_history_state (month, rotation_queues, next_round_queues)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (month) 
+                DO UPDATE SET rotation_queues = EXCLUDED.rotation_queues, next_round_queues = EXCLUDED.next_round_queues
+            """, (start_date, Json(res_meta['rotation_queues']), Json(res_meta['next_round_queues'])))
+        except Exception as e:
+            logger.error(f"Failed to save history state: {e}")
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -618,6 +810,65 @@ def get_balance(current_user):
     end_str = request.args.get('end')
     # Use imported calculation
     return jsonify(scheduler_logic.calculate_db_balance(start_str, end_str))
+
+@app.route('/api/services/special_duties_report', methods=['GET'])
+@cross_origin()
+@require_auth
+def get_special_duties_report(current_user):
+    conn = get_db()
+    if not conn: return jsonify({"error": "DB Connection Failed"}), 500
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        # 1. Get Special Dates (Map date string -> description)
+        cur.execute("SELECT date, description FROM special_dates")
+        special_dates = {str(r['date']): r['description'] for r in cur.fetchall()}
+        
+        # 2. Get All Schedule
+        cur.execute("""
+            SELECT s.date, s.employee_id, u.name, u.surname, d.name as duty_name
+            FROM schedule s
+            JOIN users u ON s.employee_id = u.id
+            JOIN duties d ON s.duty_id = d.id
+            ORDER BY s.date
+        """)
+        schedule = cur.fetchall()
+        
+        # 3. Filter & Group
+        report = {}
+        for s in schedule:
+            s_date = str(s['date']) # YYYY-MM-DD
+            ds = dt.strptime(s_date, '%Y-%m-%d')
+            
+            # Check if it's a special date
+            # A. Exact Match
+            is_special = s_date in special_dates
+            desc = special_dates.get(s_date)
+            
+            # B. Recurring Match (Year 2000)
+            if not is_special:
+                rec_key = f"2000-{ds.month:02d}-{ds.day:02d}"
+                if rec_key in special_dates:
+                    is_special = True
+                    desc = special_dates[rec_key]
+            
+            if is_special:
+                eid = s['employee_id']
+                if eid not in report:
+                    report[eid] = {
+                        'name': f"{s['name']} {s['surname'] or ''}".strip(),
+                        'count': 0,
+                        'details': []
+                    }
+                report[eid]['count'] += 1
+                report[eid]['details'].append(f"{desc} {ds.year} - {s['duty_name']}")
+        
+        # 4. Format Output List
+        output = [v for k, v in report.items()]
+        output.sort(key=lambda x: x['count'], reverse=True)
+        
+        return jsonify(output)
+    finally:
+        conn.close()
 
 @app.route('/api/services/unavailability', methods=['GET', 'POST', 'DELETE'])
 @require_auth
@@ -657,28 +908,26 @@ def s_prefs(current_user):
     if not conn: return jsonify({"error": "DB Connection Failed"}), 500
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cur.execute("CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER, month_str TEXT, prefer_double_sk BOOLEAN, PRIMARY KEY (user_id, month_str))")
+        cur.execute("CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER, prefer_double_sk BOOLEAN, PRIMARY KEY (user_id))")
         conn.commit()
         if request.method == 'GET':
             uid = request.args.get('user_id')
-            m_str = request.args.get('month')
-            cur.execute("SELECT prefer_double_sk FROM user_preferences WHERE user_id = %s AND month_str = %s", (uid, m_str))
+            cur.execute("SELECT prefer_double_sk FROM user_preferences WHERE user_id = %s", (uid,))
             res = cur.fetchone()
             return jsonify({"prefer_double_sk": res['prefer_double_sk'] if res else False})
         if request.method == 'POST':
             d = request.json
             is_valid, error = validate_input(d, {
                 'user_id': {'type': int},
-                'month': {'type': str, 'regex': r'^\d{4}-\d{2}$'},
                 'value': {'type': bool}
             })
             if not is_valid: return jsonify({"error": error}), 400
             cur.execute("""
-                INSERT INTO user_preferences (user_id, month_str, prefer_double_sk) 
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id, month_str) 
+                INSERT INTO user_preferences (user_id, prefer_double_sk) 
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) 
                 DO UPDATE SET prefer_double_sk = EXCLUDED.prefer_double_sk
-            """, (d['user_id'], d['month'], d['value']))
+            """, (d['user_id'], d['value']))
             conn.commit()
             return jsonify({"success": True})
     finally:

@@ -1,12 +1,12 @@
 # Scheduling Logic — Complete Documentation
 
-This document describes **exactly** what `scheduler_logic.py` does, function by function, phase by phase. Edit this document freely; changes will be applied back to the code.
+This document describes **exactly** what `scheduler_logic.py` does, function by function, phase by phase.
 
 ---
 
 ## 1. Imports & Setup
 
-```
+```python
 os, json, random, psycopg2, logging
 datetime (aliased as dt), timedelta
 dateutil.relativedelta → relativedelta
@@ -32,7 +32,7 @@ A module-level logger `customs_api` is created.
 
 Checks whether a date falls inside a configurable active range.
 
-- **Input**: a `date` object and a `range_config` dict with `start` and `end` keys (format `DD-MM` or `DD/MM`).
+- **Input**: a `date` object and a `range_config` dict with `start` and `end` keys.
 - If `range_config` is empty / missing keys → returns `True` (always active).
 - Supports wrap-around ranges (e.g. `01-11` to `31-03`).
 - Returns `True`/`False`.
@@ -44,7 +44,8 @@ Determines if a date counts towards weekend / special-date scoring.
 - Accepts either a `date` object or a `YYYY-MM-DD` string.
 - Returns `True` if:
   - The ISO weekday is **Saturday (6)** or **Sunday (7)**, OR
-  - The date string is present in `special_dates_set`.
+  - The date string is present in `special_dates_set`, OR
+  - The recurring version of the date (`2000-MM-DD`) is present in `special_dates_set`.
 - Returns `False` otherwise.
 
 ### 3c. `get_staff_users(cursor)`
@@ -59,14 +60,12 @@ Determines if a date counts towards weekend / special-date scoring.
 Loads all data the scheduler needs from the database into a single dict.
 
 ### Steps:
-1. Ensures the `scheduler_state` table exists (creates it if not).
-2. Fetches **employees** via `get_staff_users`.
-3. Fetches **duties** from the `duties` table.
-4. Fetches the full **schedule** from the `schedule` table (converts dates to strings).
-5. Fetches **unavailability** records (converts dates to strings).
-6. Fetches **rotation_queues** and **next_round_queues** from `scheduler_state`.
-7. Fetches **special_dates** from the `special_dates` table.
-8. If `start_date` is provided, fetches **user preferences** for the corresponding month from `user_preferences` (specifically the `prefer_double_sk` flag).
+1. Ensures `scheduler_state` and `user_preferences` tables exist.
+2. Fetches **employees**, **duties**, **schedule** (within range), **unavailability**, **special_dates**.
+3. Fetches **rotation_queues** and **next_round_queues**.
+   - **Unified SK Queue**: Uses `sk_all` for ALL weekend/special shifts (Normal & Cover).
+   - **Double Population**: The `sk_all` queue is populated by appending the full list of employees **twice** (non-adjacent: `[A, B, C... A, B, C]`).
+4. Fetches **user preferences** (specifically `prefer_double_sk`).
 
 ### Returns:
 ```python
@@ -88,223 +87,130 @@ Loads all data the scheduler needs from the database into a single dict.
 
 ## 5. `calculate_db_balance(start_str=None, end_str=None)`
 
-Calculates score / balance statistics for the **frontend Balance tab**. Mirrors the scheduler's scoring logic so numbers are consistent.
+Calculates score / balance statistics for the **frontend Balance tab**.
 
-### Parameters:
-- `start_str`, `end_str`: optional, format `YYYY-MM`. If omitted, considers all dates.
-
-### Stat Structure (per employee):
+### Stat Structure:
 ```python
 {
     'name': str,
     'total': int,            # raw duty score
     'effective_total': int,  # total + handicaps
     'sk_score': int,         # weekend/special-date score
-    'duty_counts': {duty_id: int, ...},
-    '_seen_weeks': set()     # internal, removed before return
+    'special_normal': int,   # count of special dates for normal duties
+    'special_offbalance': int, # count of special dates for off-balance duties
+    'duty_counts': {...}
 }
 ```
 
-### Step A — Base Handicaps
-For every employee, for every non-off-balance duty, reads the `handicaps` value from each shift config entry and adds it to `effective_total`.
-
-### Step B — Process Schedule
-
-#### Logic A: Weekly Duties
-- **Counter**: Counts unique ISO weeks via `_seen_weeks` set. Each week is counted once per duty, regardless of how many individual days fall in the period.
-- **Score**: Only adds to `total` and `effective_total` on **scoreable days** (Sat/Sun/Special). Off-balance weekly duties are skipped.
-- After processing, `continue` (skips Logic B).
-
-#### Logic B: Daily Duties
-1. **Counter**: Increments `duty_counts[duty_id]` by 1 for every schedule entry.
-2. **Off-Balance Check**: If the duty is `is_off_balance`, skip scoring.
-3. **Protected Default Logic**: If the shift is `is_within_hours` AND the employee is the `default_employee_id`, skip scoring on **non-scoreable** days (M–F that are not special dates). This means the default owner is only scored on weekends/special dates.
-4. **Add Score**: Increments `total` and `effective_total` by 1.
-5. **SK Score**: If the duty is NOT `is_special` and NOT `is_off_balance` and it's a **scoreable day**, increments `sk_score`. IMPORTANT NOTE TO CHECK: **scoreable days** of weekly duties are in fact counted in the sk_score.
-
-### Cleanup
-- Removes the `_seen_weeks` set from each stat entry.
-- Returns a list of stat dicts.
+### Logic:
+1. **Handicaps**: Adds static offsets from shift config to `effective_total`.
+2. **Weekly Duties**:
+   - Counts unique weeks.
+   - Adds to `sk_score` if on a scoreable day (Sat/Sun/Special).
+   - Only scores `total` on scoreable days.
+3. **Daily Duties**:
+   - Skips `is_off_balance` duties for standard scoring (handled separately).
+   - **Protected Default**: Default employees for work-hours duties are NOT scored on weekdays (M-F non-special).
+   - Adds 1 to `total` and `effective_total`.
+   - Adds 1 to `sk_score` if on a scoreable day.
+4. **Special Counts**: Tracks strictly special dates (holidays) separately for Normal vs. Off-Balance duties.
 
 ---
 
 ## 6. `run_auto_scheduler_logic(db, start_date, end_date)`
 
-The main scheduling algorithm. Takes the pre-loaded `db` dict and a date range.
-
-### Setup
-- Extracts employees, duties, special dates, schedule, history, unavailability, rotation queues, and preferences.
-- **Schedule vs. History**: entries within `[start_date, end_date]` that are `manually_locked` are kept in `schedule`. All other entries (outside the range) go to `history`. Non-locked entries within the range are **discarded** (they will be regenerated).
-- Normalizes duty `shifts_per_day` and `shift_config` defaults.
-
-### Internal Helpers
-
-#### `is_user_busy(eid, check_date, current_schedule, ignore_yesterday=False)`
-Checks if an employee is busy on a given date by scanning `current_schedule + history`:
-- **Only considers normal and weekly duties** — off-balance and special duties are **ignored**.
-- Returns `"Εργάζεται"` if the employee has a (normal/weekly) duty on `check_date`.
-- Returns `"Εργάστηκε Χθες"` if the employee worked the **previous day** (unless `ignore_yesterday=True`).
-- Returns `"Εργάζεται Αύριο"` if the employee has a duty on the **next day**.
-- Returns `False` if available.
-
-This enforces the **1-0-1 rest rule**: no back-to-back duty days (for normal/weekly duties only).
-
-> **Note**: Off-balance and special duties do NOT block an employee from being assigned. An employee can work an off-balance or special duty on an adjacent day without triggering the busy check.
-
-#### `get_q(key, excluded_ids=[])`
-Retrieves the rotation queue for a given key:
-1. Loads `rot_q[key]` (current queue) and `nxt_q[key]` (next-round queue).
-2. Filters out invalid / excluded employee IDs.
-3. Adds any missing employees to the current queue.
-4. If the current queue is empty, promotes the next-round queue.
-5. Updates `rot_q` and `nxt_q` in place.
-6. Returns `(current_queue, next_round_queue)`.
-
-#### `rotate_assigned_user(key, user_id)`
-After assigning a user from the rotation queue:
-- Removes them from the current queue (`rot_q`).
-- Appends them to the next-round queue (`nxt_q`).
-
----
+The main scheduling algorithm.
 
 ### Phase 0: Work-Hours Assignments
 
-Assigns shifts marked as `is_within_hours` (i.e. duties that fall within normal working hours).
+Assigns shifts marked as `is_within_hours`.
 
-**For each day** in the range, **for each work-hour slot**:
-1. Skip if the duty or shift is outside its `active_range`.
-2. Skip if already assigned (locked).
-3. For weekly duties, skip Sundays outside the `sunday_active_range`.
-4. Determine if a **cover** is needed:
-   - No `default_employee_id` is configured, OR
-   - The default employee is unavailable or busy, OR
-   - The day is a **scoreable day** AND the default employee is **excluded** (disabled in Αναθέσεις tab).
-5. If no cover needed → assign the default employee.
-6. If cover needed → pick from the rotation queue (`cover_{duty_id}_{shift_idx}`), choosing the first available candidate. All employees in the `excluded_ids` list are **fully excluded** from the rotation queue (they cannot be picked as cover on any day).
-7. Log a warning if no one is available.
-
-> **Key distinction**: The `default_employee_id` is **always** assigned on weekdays (non-scoreable days), even if they are disabled in the Αναθέσεις tab. Being "enabled" (not excluded) in Αναθέσεις means the default employee can **also** cover scoreable days (Sat/Sun/Special). All **other** employees, when excluded, are completely removed from the rotation queue and cannot be assigned on any day.
-
----
+1. **Default Employee**: Tries to assign the configured `default_employee_id`.
+2. **Cover Needed**: If default is unavailable, busy, or excluded on a scoreable day.
+3. **Fallback**: Picks from rotation queue.
+   - **Scoreable Day (Sat/Sun/Special)**: Uses unified `sk_all` queue.
+   - **Weekdays**: Uses `cover_{duty_id}_{sh}`.
+4. **Double SK Logic (Sundays)**:
+   - If today is **Sunday**: Check if the user assigned to this duty on **Saturday** has `prefer_double_sk = True`.
+   - **Force Double**: If Sat was Normal (not Special) and Sun is Normal -> **Force Assign** the same user to Sunday (ignoring "busy yesterday or tomorrow" rule).
+      - **Double Duty Check**: Prioritizes candidates with **>= 2 instances** in the `sk_all` queue (along with preference) to facilitate double duty.
+   - **Avoid Burnout**: If Sat was Special (Holiday), do NOT force assign but pick an employee who doesn't have a double SK duty preference if possible.
 
 ### Phase 1: Weekly Duty Assignments
 
-Assigns weekly duties (non-special, non-work-hours) one week at a time.
+Assigns weekly duties (non-special, non-work-hours, **non-off-balance**).
 
-**For each weekly duty, for each shift**:
-1. Calculate the week boundaries (`w_start` to `w_end`).
-2. **Continuity Check**: If the week starts before `start_date`, look at the schedule history to find who was assigned the day before `start_date`. Assign the same person to maintain continuity.
-3. If no continuity match, pick from the rotation queue (`weekly_{duty_id}_sh_{shift_idx}`).
-4. Assign the chosen employee to **every day** in the week (Mon–Sun), skipping Sundays if outside `sunday_active_range`, and skipping already-assigned slots.
-5. Log a warning if no one is available.
-
----
+1.   - **Continuity Check**: If a week assignment starts mid-month (e.g., month starts on Wednesday), it looks back to the **previous day** (end of last month) to see who was assigned.
+     - If found: Extends that user's assignment to the partial first week.
+     - If not found: Starts fresh assignment from the first full week.
+   - **Full Weeks**: For standard weeks, it checks if the previous week was assigned to the same person (implied continuity, though rare for weekly duties unless forced).assignment.
+2. **Rotation**: Picks from queue `weekly_{duty_id}_{sh}`.
+3. Assigns for the full week (Mon-Sun), respecting `sunday_active_range`.
 
 ### Phase 2: Daily Duty Assignments
 
-Assigns daily (non-weekly, non-special, non-work-hours) duties.
+Assigns daily duties (non-weekly, non-special, non-work-hours, **non-off-balance**).
 
-**For each day**:
-1. Collect all unassigned slots for active daily duties.
-2. **Shuffle** the slots randomly to avoid ordering bias.
-3. For each slot, pick from the rotation queue (`normal_{duty_id}_sh_{shift_idx}`), choosing the first candidate who is not unavailable and not busy.
-4. Assign and rotate.
-5. Log a warning if no one is available.
+1. **Shuffle**: Randomizes slot order for fairness.
+2. **Double SK Logic (Sundays)**:
+   - If today is **Sunday**: Check if the user assigned to this duty on **Saturday** has `prefer_double_sk = True`.
+   - **Force Double**: If Sat was Normal (not Special) and Sun is Normal -> **Force Assign** the same user to Sunday (ignoring "busy yesterday  or tomorrow" rule).
+   - **Avoid Burnout**: If Sat was Special (Holiday) **OR** if Sun is Special (Holiday), do NOT force assign. We treat Holidays as standalone shifts to avoid burnout.
+4. **Selection**: Picks from rotation queue.
+   - **Sat/Sun/Special**: Uses unified `sk_all` queue.
+   - **Weekdays**: Uses `normal_{duty_id}_{sh}`.
+   - **Double Duty Check**: Prioritizes candidates with **>= 2 instances** in the `sk_all` queue (along with preference) to facilitate double duty.
+   
 
----
+### Phase 5: Special-Date Balancing
 
-### Balancing Logic (Phases 3 & 4)
+**Goal**: Equalize shifts on strictly **Special Dates** (Holidays). Runs twice: for Normal duties, then Off-Balance duties.
 
-Uses a shared balancing engine (`run_balance`) that runs twice:
-1. **Phase 3**: Balances **normal duties** (not off-balance, not special).
-2. **Phase 4**: Balances **off-balance duties** (off-balance, not special).
+- **Threshold**: Difference > 1.
+- **Swaps**:
+  1. **Daily**: Swap a **Special Shift** (Richest) <-> **Normal Weekend Shift** (Poorest).But tries every possible combination and do not stop until balance is achieved or the same failure happens twice in a row.If the same failure happens twice in a row, make a switch with another rich employee and then try again. This balances holidays without disrupting the total "Weekend/Holiday" count (SK score) too much.
+     - Fallback: Swap Special <-> Normal Weekday.
+  2. **Weekly**: Swap an **Entire Week**. Requires the Richest's week to have *more* special days than the Poorest's week.
 
-#### `get_detailed_scores(target_duties)`
-Calculates per-employee scores for a set of duty IDs:
-- **Excludes employees** who are in the `excluded_ids` of **every** shift of **every** target duty (globally excluded). These employees don't appear in the score dict at all.
-- Adds **handicap** offsets from shift configs (for non-excluded employees only).
-- Iterates over `history + schedule` for the target duties.
-- **Lookback window**: from 2 months before `start_date` to `end_date`.
-- **Weekly duty** entries only count on scoreable days.
-- **Work-hours shifts** assigned to the default employee only count on scoreable days.
-- Returns `{employee_id: score}` (excluded employees are omitted).
+### Phase 6: SK (Weekend) Balancing
 
-#### `run_balance(target, label)`
-Iteratively moves shifts from over-assigned employees to under-assigned ones:
-1. Calculate scores.
-2. Find the employee with the **most** shifts (`max`) and the **least** (`min`).
-3. If the difference is ≤ 1, stop — balanced.
-4. Identify **potential donors** (anyone with a score > min + 1), starting from the highest.
-5. For each donor's unlocked shifts (in the current month, shuffled):
-   - Skip if it's a work-hours default shift on a non-scoreable day.
-   - Skip if it's a weekly duty.
-   - Find a valid **receiver** (anyone with score < donor − 1) who is not excluded, not unavailable, and not busy.
-   - Reassign the shift.
-6. If no swap is possible for 3+ consecutive iterations (**stagnation**), log diagnostic reasons and stop.
-7. Maximum 500 iterations.
+**Goal**: Equalize **SK Score** (shifts on Sat/Sun/Special) over a 6-month window.
 
----
+- **Threshold**: Difference > **2** (Loosened to allow Double Duty users to hold extra weekends).
+- **Target**: Only swaps **Normal** duties. Weekly/Special/Off-Balance are protected.
+- **Atomic Swaps**:
+  - If the Donor (Richest) has a **Double Duty Pair** (Sat+Sun assigned to same duty/shift):
+  - Tries to swap **BOTH** shifts together to a Receiver who has 2 available Weekday shifts.
+  - This preserves the "Full Weekend" block.
+  **Verbose Atomic Swap Logging**: Logs every atomic swap attempt, including the specific dates and duties being swapped, to help diagnostics.
+- **Single Swaps**: Fallback standard swap (Weekend Shift <-> Weekday Shift).
 
-### Phase 5: SK (Weekend/Special Date) Balancing
+- **Loop**: Uses `continue` on failure to ensure all pairs are tried.
+- **Stagnation Fallback 1 (Relaxed Diff)**: If balancing stagnates, it relaxes the difference check (`>1` instead of `>2`) to allow swapping from **Max-1** employees.
+- **Stagnation Fallback 2 (Weekly Swap)**: If granular swaps fail, it attempts to swap an **entire week** of a Weekly Duty from the Max employee to a Min employee (if eligible and free). This is a "heavy" move to break stagnation.
+- **Verbose Stagnation Logging**: Log top 10 failure reasons.
 
-Balances the number of **scoreable-day** (weekend + special date) duties across employees over a **6-month rolling window** (current month + 5 months back).
+### Phase 7: Off-Balance Duties
 
-#### SK Score Calculation
-For every entry in `history + schedule` within the window:
-- Skip entries before the window start.
-- Skip duties that are `is_special` or `is_off_balance`.
-- If the entry is on a **scoreable day** → add 1 to the employee's SK score.
+Handles duties marked `is_off_balance` (e.g., extra help, standout shifts).
 
-> **Note**: Weekly duties ARE included in the SK score (they are not filtered out). This is intentional — weekly duties on weekends count towards weekend fairness.
+1. **Assign Weekly**: Similar to Phase 1 but for off-balance.
+2. **Assign Daily**: Similar to Phase 2 but for off-balance (Double Duty Logic is **NOT** applied).
+3. **Balance**: Runs `run_balance` specifically for off-balance duties (Total Count balancing).
 
-#### SK Swap Logic
-Up to 200 iterations:
-1. Calculate SK scores.
-2. SK scores are initialized only for employees who participate in **at least one shift** of normal duties (employees excluded from ALL normal-duty shifts via `excluded_ids` are removed from SK scoring entirely).
-3. If the entry is on a **scoreable day** → add 1 to the employee's SK score (only if they are in the score dict).
-4. For each over-assigned employee (`max_id`) and under-assigned employee (`min_id`):
-   - Find **max_we**: max_id's shifts on **scoreable days** (not locked, not weekly/special/off-balance).
-   - Find **min_wd**: min_id's shifts on **non-scoreable days** (not locked, not weekly/special/off-balance).
-   - Before swapping, verify that `min_id` is **not excluded** from max_id's specific shift, and `max_id` is **not excluded** from min_id's specific shift (`excluded_ids` per-shift check).
-   - Try to **swap** a scoreable-day shift of max_id with a non-scoreable-day shift of min_id.
-   - Only swap if neither employee is unavailable or busy on the swapped dates.
-   - Try **all possible max/min pairs** before giving up.
-5. If no swap is possible across all pairs, log diagnostic info (available SK shifts, available weekday shifts) and stop.
+### Phase 8: Final Weekday Balancing
 
-> **Key constraint**: Weekly, special, and off-balance duties are **never swapped** during SK balancing. They are included in the score but protected from being moved.
->
-> **Diagnostics**: When no swap is found, the log shows the employee names, their SK scores, and how many swappable shifts each has, to help debug the issue.
+**Goal**: Correct total shift counts using **only Weekday (Mon-Fri) non-Special shifts**.
+- Runs at the very end of generation.
+- Ensures that total shift counts are balanced without disturbing the delicate Weekend/Holiday balance achieved in previous phases.
 
----
+### Balancing Engine (`run_balance`)
 
-### Phase 6: Double Duty Optimization
-
-For employees who have opted into `prefer_double_sk` (via user preferences):
-- Tries to consolidate their two weekend shifts into a **consecutive Sat-Sun** pair.
-- Only affects non-weekly, non-special, non-off-balance duties on weekends.
-
-#### Logic:
-1. Find the user's 2 weekend shifts. If they don't have exactly 2, skip.
-2. If they're already consecutive, skip.
-3. Try to find a swappable shift on the **adjacent day** (Saturday's Sunday or Sunday's Saturday).
-4. Swap the user's distant weekend shift with the other employee's adjacent shift.
-5. Both employees must be available (not unavailable, not busy) on the swapped dates.
-
----
-
-### Return Value
-
-```python
-return schedule, {
-    "rotation_queues": rot_q,
-    "next_round_queues": nxt_q,
-    "logs": logs
-}
-```
-
-- `schedule`: the final list of schedule entries.
-- `rotation_queues` / `next_round_queues`: updated queue state to persist.
-- `logs`: list of log messages generated during the run.
+Used for Phase 3 (Normal Total), Phase 4 (Off-Balance Total), Phase 7 (Off-Balance Final), and **Phase 8 (Final Weekday)**.
+- **Goal**: Equalize total shift counts.
+- **Mechanism**: Swap Any Shift (Donor) <-> Any Shift (Receiver).
+- **Atomic Support**: Also supports Atomic Double Swaps for total balancing.
+- **Weekday Mode**: Can be restricted to only swap Weekday non-Special shifts (used in Phase 8).
 
 ---
 
@@ -312,16 +218,18 @@ return schedule, {
 
 | Term | Meaning |
 |---|---|
-| **Scoreable Day** | Saturday, Sunday, or a date in the `special_dates` table |
-| **SK Score** | Count of duties on scoreable days (weekend/special) |
-| **Handicap** | A static offset added to an employee's `effective_total` to pre-bias balancing |
-| **Off-Balance** | A duty flag; these duties are balanced separately and excluded from the main balance |
-| **Weekly Duty** | A duty assigned once per week to the same person (all 7 days) |
-| **Work-Hours** | A shift marked `is_within_hours`; has a `default_employee_id` who covers weekdays without scoring. The default employee is **always** assigned on weekdays even if excluded in Αναθέσεις; exclusion only affects scoreable days |
-| **Rotation Queue** | A FIFO queue that ensures fair round-robin assignment. `excluded_ids` fully removes non-default employees from the queue on all days |
-| **1-0-1 Rule** | No employee works two consecutive days of normal/weekly duties (enforced by `is_user_busy`). Off-balance and special duties are ignored |
-| **Protected Default** | The default employee for a work-hours shift is always assigned on weekdays (not scored). When enabled in Αναθέσεις, they also cover scoreable days. When disabled, scoreable days get a cover from the rotation queue |
-| **Special Duty** | A duty with `is_special` flag; excluded from all balancing phases |
-| **Manually Locked** | A schedule entry that cannot be moved or deleted by the scheduler |
-| **Stagnation** | When the balancer cannot make progress for 3+ iterations; it logs reasons and stops |
-| **Double Duty** | Consolidating weekend shifts to be on consecutive Sat-Sun for employees who prefer it |
+| **Scoreable Day** | Sat, Sun, or Special Date. |
+| **SK Score** | Count of duties on Scoreable Days. |
+| **Double SK** | User preference to work full weekends (Sat+Sun). |
+| **Atomic Swap** | Moving Sat+Sun together to maintain Double Duty blocks. |
+| **Off-Balance** | Duties excluded from standard Phase 1/2 assignment and Phase 3/5 balancing. Handled in Phase 7. |
+| **Work-Hours** | Shifts with a `default_employee_id`. |
+
+### Queue Persistence (New)
+To ensure monthly continuity and reproducibility:
+1.  **Storage**: A new table `scheduler_history_state` stores queue states (`rotation_queues`, `next_round_queues`) keyed by **Month** (e.g., `2024-02-01`).
+2.  **Saving**: When a schedule is generated for a month (e.g., Feb), the **final** state of the queues is saved with that month's date (`2024-02-01`).
+3.  **Loading**: When generating a schedule for the *next* month (e.g., Mar), the scheduler looks for the saved state of the **previous** month (`2024-02-01`).
+    -   **If found**: It loads those queues as the starting point.
+    -   **If not found**: It initializes queues from scratch (based on seniority).
+4.  **Benefit**: Re-running a month yields consistent results (same starting seed), and the rotation chain is preserved across months.

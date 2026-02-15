@@ -1212,7 +1212,7 @@ export const FuelApp = ({ user, onExit }) => {
             <AppHeader title="Εφοδιασμοί" user={user} onExit={onExit} icon={<Anchor size={24} />} />
             {isAdminOrStaff ? (
                 <>
-                    <div className="tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 20, padding: '0 10px' }}>
+                    <div className="tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 20, padding: '15px 10px' }}>
                         <button style={tab === 'overview' ? activeTabButtonStyle : tabButtonStyle} onClick={() => setTab('overview')}><Calendar size={20} /> <span>Πρόγραμμα</span></button>
                         <button style={tab === 'debts' ? activeTabButtonStyle : tabButtonStyle} onClick={() => setTab('debts')}><CreditCard size={20} /> <span>Οφειλές</span></button>
                         <button style={tab === 'new_res' ? activeTabButtonStyle : tabButtonStyle} onClick={() => setTab('new_res')}><Plus size={20} /> <span>Νέος Εφοδιασμός</span></button>

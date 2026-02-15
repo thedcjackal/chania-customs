@@ -7,7 +7,7 @@ import { AppHeader, formatDate, getDaysInMonth, getDayName } from '../components
 import {
     Calendar, Settings, Users, BarChart,
     Play, Save, Lock, AlertTriangle,
-    Trash2, Plus, X, Printer, Edit2, Clock, Moon, Briefcase, Calendar as CalIcon, FileText, UserCheck
+    Trash2, Plus, X, Printer, Edit2, Clock, Moon, Briefcase, Calendar as CalIcon, FileText, UserCheck, RefreshCw
 } from 'lucide-react';
 
 // --- HELPER: Name Formatter (J. Doe) ---
@@ -73,27 +73,271 @@ const ActionButton = ({ onClick, icon: Icon, label, color, hoverColor }) => {
     );
 };
 
+const QueueManager = ({ user }) => {
+    const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+    const [queues, setQueues] = useState({ rotation_queues: {}, next_round_queues: {} });
+    const [loading, setLoading] = useState(false);
+    const [employees, setEmployees] = useState([]);
+
+    const fetchEmployees = async () => {
+        try {
+            const res = await api.get(`${API_URL}/admin/employees`);
+            setEmployees(res.data);
+        } catch (error) {
+            console.error("Failed to fetch employees", error);
+        }
+    };
+
+    const fetchQueueState = useCallback(async () => {
+        setLoading(true);
+        try {
+            const res = await api.get(`${API_URL}/admin/queue_history?month=${month}`);
+            setQueues(res.data);
+        } catch (error) {
+            console.error("Failed to fetch queues", error);
+            setQueues({ rotation_queues: {}, next_round_queues: {} });
+        } finally {
+            setLoading(false);
+        }
+    }, [month]);
+
+    useEffect(() => {
+        fetchEmployees();
+    }, []);
+
+    useEffect(() => {
+        fetchQueueState();
+    }, [month, fetchQueueState]);
+
+    const handleInit = async () => {
+        if (!window.confirm("This will overwrite any existing queues for this month with a fresh default set. Continue?")) return;
+
+        try {
+            await api.post(`${API_URL}/admin/queue_init`, { month: month });
+
+            alert("Queues Initialized!");
+            fetchQueueState();
+        } catch (error) {
+            console.error("Failed to initialize queues", error);
+            alert("Failed to initialize: " + (error.response?.data?.error || error.message));
+        }
+    };
+
+    const handleSave = async () => {
+        if (!window.confirm("Are you sure you want to save changes to the queue state?")) return;
+        try {
+            await api.post(`${API_URL}/admin/queue_history?month=` + month, queues);
+            alert("Queue state saved successfully!");
+        } catch (error) {
+            alert("Failed to save: " + (error.response?.data?.error || error.message));
+        }
+    };
+
+    const handleReset = async () => {
+        if (!window.confirm("WARNING: This will DELETE the saved queue state for this month. The next scheduler run will use default initialization (Seniority Based). Continue?")) return;
+        try {
+            await api.delete(`${API_URL}/admin/queue_history?month=${month}`);
+            alert("Queue state reset/deleted!");
+            fetchQueueState();
+        } catch (error) {
+            alert("Failed to reset: " + (error.response?.data?.error || error.message));
+        }
+    };
+
+    const moveItem = (queueType, queueName, fromIndex, toIndex) => {
+        const list = [...(queues[queueType][queueName] || [])];
+        const [removed] = list.splice(fromIndex, 1);
+        list.splice(toIndex, 0, removed);
+        setQueues({
+            ...queues,
+            [queueType]: {
+                ...queues[queueType],
+                [queueName]: list
+            }
+        });
+    };
+
+    const transferItem = (sourceType, targetType, queueName, empId) => {
+        const sourceList = (queues[sourceType][queueName] || []).filter(id => id !== empId);
+        const targetList = [...(queues[targetType][queueName] || []), empId];
+
+        setQueues({
+            ...queues,
+            [sourceType]: { ...queues[sourceType], [queueName]: sourceList },
+            [targetType]: { ...queues[targetType], [queueName]: targetList }
+        });
+    };
+
+    const getName = (id) => employees.find(e => e.id === id)?.name || `Unknown (${id})`;
+
+    return (
+        <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto', fontFamily: "'Segoe UI', Roboto, Helvetica, Arial, sans-serif" }}>
+
+            {/* GLOBAL LOADING RIBBON */}
+            {loading && (
+                <div style={{
+                    position: 'fixed',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    background: 'white',
+                    padding: '20px 40px',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 15px rgba(0,0,0,0.2)',
+                    zIndex: 9999,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '15px',
+                    pointerEvents: 'none' // Blocks clicks on itself, but we want to block clicks BEHIND it too.
+                }}>
+                    <div className="spinner" style={{
+                        width: '24px',
+                        height: '24px',
+                        border: '3px solid #f3f3f3',
+                        borderTop: '3px solid #002F6C',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite'
+                    }} />
+                    <span style={{ fontWeight: 600, color: '#333' }}>Φόρτωση...</span>
+                    <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+                </div>
+            )}
+
+            {/* Global Overlay to block clicks interaction when loading */}
+            {loading && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    zIndex: 9998,
+                    cursor: 'wait'
+                }} onClick={e => e.stopPropagation()} />
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2>Queue Management (Σειρές)</h2>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                    <input
+                        type="month"
+                        value={month}
+                        onChange={e => setMonth(e.target.value)}
+                        style={{ padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                    />
+                    <div style={{ display: 'flex', gap: '10px' }}>
+                        <ActionButton icon={Play} label="Initialize Queues" color="#007bff" hoverColor="#0056b3" onClick={handleInit} />
+                        <ActionButton icon={Save} label="Save Changes" color="#28a745" hoverColor="#218838" onClick={handleSave} />
+                        <ActionButton icon={Trash2} label="Delete Queues" color="#dc3545" hoverColor="#c82333" onClick={handleReset} />
+                    </div>
+                </div>
+            </div>
+
+            {loading ? <p>Loading...</p> : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                    {Object.keys(queues.rotation_queues || {}).sort().map(qName => (
+                        <div key={qName} style={{ border: '1px solid #eee', borderRadius: '8px', padding: '15px', background: '#f9f9f9' }}>
+                            <h3 style={{ margin: '0 0 10px 0', color: '#555' }}>{qName}</h3>
+                            <div style={{ display: 'flex', gap: '20px' }}>
+                                <div style={{ flex: 1 }}>
+                                    <h4 style={{ fontSize: '0.9rem', color: '#4CAF50' }}>Current Round</h4>
+                                    <ul style={{ listStyle: 'none', padding: 0, background: 'white', border: '1px solid #ddd', borderRadius: '4px', minHeight: '50px' }}>
+                                        {(queues.rotation_queues[qName] || []).map((empId, idx) => (
+                                            <li key={`${empId}-${idx}`} style={{ padding: '8px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span>{idx + 1}. {getName(empId)}</span>
+                                                <div style={{ display: 'flex', gap: '5px' }}>
+                                                    <button onClick={() => moveItem('rotation_queues', qName, idx, idx - 1)} disabled={idx === 0}>↑</button>
+                                                    <button onClick={() => moveItem('rotation_queues', qName, idx, idx + 1)} disabled={idx === (queues.rotation_queues[qName].length - 1)}>↓</button>
+                                                    <button onClick={() => transferItem('rotation_queues', 'next_round_queues', qName, empId)} title="Move to Next Round">→</button>
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                    <h4 style={{ fontSize: '0.9rem', color: '#2196F3' }}>Next Round (Waiting)</h4>
+                                    <ul style={{ listStyle: 'none', padding: 0, background: 'white', border: '1px solid #ddd', borderRadius: '4px', minHeight: '50px' }}>
+                                        {(queues.next_round_queues[qName] || []).map((empId, idx) => (
+                                            <li key={`${empId}-${idx}`} style={{ padding: '8px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <span>{idx + 1}. {getName(empId)}</span>
+                                                <div style={{ display: 'flex', gap: '5px' }}>
+                                                    <button onClick={() => transferItem('next_round_queues', 'rotation_queues', qName, empId)} title="Move to Current">←</button>
+                                                    <button onClick={() => moveItem('next_round_queues', qName, idx, idx - 1)} disabled={idx === 0}>↑</button>
+                                                    <button onClick={() => moveItem('next_round_queues', qName, idx, idx + 1)} disabled={idx === (queues.next_round_queues[qName].length - 1)}>↓</button>
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                    {Object.keys(queues.rotation_queues || {}).length === 0 && (
+                        <div style={{ textAlign: 'center', padding: '20px', color: '#666' }}>
+                            <p>No queue history found for {month}.</p>
+                            <p style={{ fontSize: '0.8rem' }}>Run the scheduler for this month to generate queues, or Initialize manual history.</p>
+                            <div style={{ background: '#eee', padding: 10, marginTop: 10, textAlign: 'left', fontSize: '0.7em', fontFamily: 'monospace' }}>
+                                DEBUG: {JSON.stringify(queues).slice(0, 200)}...
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 export const ServicesApp = ({ user, onExit }) => {
     const isAdmin = user.role === 'admin' || user.role === 'root_admin';
+    const isRoot = user.role === 'root_admin';
     const [tab, setTab] = useState(isAdmin ? 'schedule' : 'myschedule');
     const [config, setConfig] = useState({ duties: [], special_dates: [], rotation_queues: {} });
     const [schedule, setSchedule] = useState([]);
     const [employees, setEmployees] = useState([]);
-    const [currentMonth, setCurrentMonth] = useState(new Date());
+    const [currentMonth, setCurrentMonth] = useState(() => {
+        const saved = localStorage.getItem('services_currentMonth');
+        return saved ? new Date(saved) : new Date();
+    });
     const [modal, setModal] = useState(null);
     const [dutyForm, setDutyForm] = useState({});
     const [dutyEditMode, setDutyEditMode] = useState(null);
     const [myUnavail, setMyUnavail] = useState([]);
-    const [schedulerModal, setSchedulerModal] = useState(false);
-    const [schedulerRange, setSchedulerRange] = useState({ start: '', end: '' });
-    const [clearModal, setClearModal] = useState(false);
-    const [clearRange, setClearRange] = useState({ start: '', end: '' });
     const [schedulerLogs, setSchedulerLogs] = useState([]);
     const [balanceStats, setBalanceStats] = useState([]);
-    const [balanceRange, setBalanceRange] = useState({
-        start: new Date().toISOString().slice(0, 7),
-        end: new Date().toISOString().slice(0, 7)
+    const [balanceRange, setBalanceRange] = useState(() => {
+        const saved = localStorage.getItem('services_balanceRange');
+        if (saved) { try { return JSON.parse(saved); } catch (e) { } }
+        return { start: new Date().toISOString().slice(0, 7), end: new Date().toISOString().slice(0, 7) };
     });
+    const [showSpecialReport, setShowSpecialReport] = useState(false);
+    const [specialReportData, setSpecialReportData] = useState([]);
+
+    // Global Loading State
+    const [loading, setLoading] = useState(false);
+
+    // Axios Interceptors for Global Loading
+    useEffect(() => {
+        let reqInterceptor = api.interceptors.request.use(req => {
+            setLoading(true);
+            return req;
+        }, err => {
+            setLoading(false);
+            return Promise.reject(err);
+        });
+
+        let resInterceptor = api.interceptors.response.use(res => {
+            setLoading(false);
+            return res;
+        }, err => {
+            setLoading(false);
+            return Promise.reject(err);
+        });
+
+        return () => {
+            api.interceptors.request.eject(reqInterceptor);
+            api.interceptors.response.eject(resInterceptor);
+        };
+    }, []);
 
     // General Settings State
     const [generalSettings, setGeneralSettings] = useState({ declaration_deadline: 25, signee_name: '' });
@@ -118,6 +362,11 @@ export const ServicesApp = ({ user, onExit }) => {
 
     const printRef1 = useRef();
     const printRef2 = useRef();
+    const logsPrintRef = useRef();
+
+    // Persist currentMonth and balanceRange to localStorage
+    useEffect(() => { localStorage.setItem('services_currentMonth', currentMonth.toISOString()); }, [currentMonth]);
+    useEffect(() => { localStorage.setItem('services_balanceRange', JSON.stringify(balanceRange)); }, [balanceRange]);
 
     // Use useCallback to memoize function so it can be a dependency
     const loadMyUnavailability = useCallback(async () => {
@@ -477,6 +726,84 @@ export const ServicesApp = ({ user, onExit }) => {
         }
     };
 
+    const loadSpecialReport = async () => {
+        try {
+            const res = await api.get(`${API_URL}/services/special_duties_report`);
+            setSpecialReportData(res.data);
+            setShowSpecialReport(true);
+        } catch (e) { alert("Error loading report"); }
+    };
+
+    // --- BULK ADD GREEK HOLIDAYS (20 years) ---
+    const addGreekHolidays = async () => {
+        if (!window.confirm('Θα προστεθούν όλες οι ελληνικές αργίες για τα επόμενα 20 χρόνια. Συνέχεια;')) return;
+
+        // Orthodox Easter (Meeus algorithm)
+        const orthodoxEaster = (year) => {
+            const a = year % 4, b = year % 7, c = year % 19;
+            const d = (19 * c + 15) % 30;
+            const e = (2 * a + 4 * b - d + 34) % 7;
+            const month = Math.floor((d + e + 114) / 31); // 3=March, 4=April
+            const day = ((d + e + 114) % 31) + 1;
+            // Julian date -> Gregorian: add 13 days for 20th-21st century
+            const julian = new Date(year, month - 1, day);
+            julian.setDate(julian.getDate() + 13);
+            return julian;
+        };
+
+        const pad = (n) => String(n).padStart(2, '0');
+        const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+
+        const holidays = [];
+
+        // Fixed holidays (recurring, year 2000)
+        const fixed = [
+            ['01', '01', 'Πρωτοχρονιά'],
+            ['01', '06', 'Θεοφάνια'],
+            ['03', '25', 'Εθνική Εορτή (25η Μαρτίου)'],
+            ['05', '01', 'Εργατική Πρωτομαγιά'],
+            ['08', '15', 'Κοίμηση της Θεοτόκου'],
+            ['10', '28', 'Επέτειος του Όχι'],
+            ['12', '25', 'Χριστούγεννα'],
+            ['12', '26', '2η Χριστουγέννων'],
+        ];
+        for (const [m, d, desc] of fixed) {
+            holidays.push({ date: `2000-${m}-${d}`, description: desc });
+        }
+
+        // Moveable holidays for each year
+        const currentYear = new Date().getFullYear();
+        for (let y = currentYear; y < currentYear + 20; y++) {
+            const easter = orthodoxEaster(y);
+            const moveable = [
+                [addDays(easter, -48), 'Καθαρά Δευτέρα'],
+                [addDays(easter, -2), 'Μεγάλη Παρασκευή'],
+                [easter, 'Κυριακή του Πάσχα'],
+                [addDays(easter, 1), 'Δευτέρα του Πάσχα'],
+                [addDays(easter, 50), 'Αγίου Πνεύματος'],
+            ];
+            for (const [dt, desc] of moveable) {
+                holidays.push({ date: fmt(dt), description: desc });
+            }
+        }
+
+        // Bulk insert, skip duplicates
+        let added = 0, skipped = 0;
+        const existing = new Set((config.special_dates || []).map(d => d.date));
+        for (const h of holidays) {
+            if (existing.has(h.date)) { skipped++; continue; }
+            try {
+                await api.post(`${API_URL}/admin/special_dates`, h);
+                added++;
+            } catch (e) { skipped++; }
+        }
+
+        const c = await api.get(`${API_URL}/admin/services/config`);
+        setConfig(c.data);
+        alert(`Ολοκληρώθηκε! Προστέθηκαν ${added} αργίες` + (skipped ? `, ${skipped} παραλείφθηκαν (ήδη υπάρχουν).` : '.'));
+    };
+
     const removeSpecial = async (dStr) => {
         if (!window.confirm("Διαγραφή ειδικής ημερομηνίας;")) return;
         try {
@@ -487,42 +814,41 @@ export const ServicesApp = ({ user, onExit }) => {
     };
 
     const runManualScheduler = async () => {
-        if (!schedulerRange.start) return alert("Επιλέξτε μήνα.");
+        const y = currentMonth.getFullYear();
+        const m = String(currentMonth.getMonth() + 1).padStart(2, '0');
+        const monthStr = `${y}-${m}`;
 
-        if (!window.confirm(`Προσοχή! Αυτή η ενέργεια θα διαγράψει και θα ξαναδημιουργήσει το πρόγραμμα για τον μήνα ${schedulerRange.start}. Συνέχεια;`)) return;
+        if (!window.confirm(`Προσοχή! Αυτή η ενέργεια θα διαγράψει και θα ξαναδημιουργήσει το πρόγραμμα για τον μήνα ${monthStr}. Συνέχεια;`)) return;
 
         try {
             const res = await api.post(`${API_URL}/services/run_scheduler`, {
-                start: schedulerRange.start,
-                end: schedulerRange.start // Single month logic
+                start: monthStr,
+                end: monthStr
             });
             const s = await api.get(`${API_URL}/services/schedule`);
             setSchedule(s.data);
             setSchedulerLogs(res.data.logs || []);
-            setSchedulerModal(false);
             alert("Ο Χρονοπρογραμματιστής ολοκληρώθηκε!");
         } catch (e) { console.error(e); alert("Σφάλμα: " + (e.response?.data?.error || e.message)); }
     };
 
     // --- FIX: ROBUST LAST DAY CALCULATION ---
     const runClearSchedule = async () => {
-        if (!clearRange.start) return alert("Επιλέξτε μήνα.");
+        const y = currentMonth.getFullYear();
+        const m = String(currentMonth.getMonth() + 1).padStart(2, '0');
+        const monthStr = `${y}-${m}`;
 
-        if (!window.confirm(`Είστε σίγουροι; Αυτή η ενέργεια θα διαγράψει το πρόγραμμα για τον μήνα ${clearRange.start}. (Τα κλειδωμένα διατηρούνται)`)) return;
+        if (!window.confirm(`Είστε σίγουροι; Αυτή η ενέργεια θα διαγράψει το πρόγραμμα για τον μήνα ${monthStr}. (Τα κλειδωμένα διατηρούνται)`)) return;
 
-        const start = clearRange.start + "-01";
-
-        // Calculate end date strictly using calendar values to avoid Timezone shifts
-        const [year, month] = clearRange.start.split('-').map(Number);
-        // new Date(year, month, 0) gives the last day of the 'month' (where month is 1-based from input, acting as 0-based next month for constructor)
-        const lastDay = new Date(year, month, 0).getDate();
-        const endStr = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+        const start = monthStr + "-01";
+        // Calculate last day
+        const lastDay = new Date(y, currentMonth.getMonth() + 1, 0).getDate();
+        const endStr = `${y}-${m}-${String(lastDay).padStart(2, '0')}`;
 
         try {
             await api.post(`${API_URL}/services/clear_schedule`, { start_date: start, end_date: endStr });
             const s = await api.get(`${API_URL}/services/schedule`);
             setSchedule(s.data);
-            setClearModal(false);
             alert("Το πρόγραμμα καθαρίστηκε!");
         } catch (e) { alert("Σφάλμα"); }
     };
@@ -530,8 +856,29 @@ export const ServicesApp = ({ user, onExit }) => {
     const onDragStart = (e, index) => { setDraggedItem(employees[index]); e.dataTransfer.effectAllowed = "move"; };
     const onDragOver = (e, index) => { e.preventDefault(); setDragOverIndex(index); const draggedOverItem = employees[index]; if (draggedItem === draggedOverItem) return; let items = employees.filter(item => item !== draggedItem); items.splice(index, 0, draggedItem); setEmployees(items); };
     const onDrop = () => { setDraggedItem(null); setDragOverIndex(null); };
+
     const saveSeniorityOrder = async () => { try { await api.put(`${API_URL}/admin/employees`, { reorder: employees.map(e => e.id) }); alert("Η σειρά αρχαιότητας αποθηκεύτηκε!"); } catch (e) { alert("Αποτυχία αποθήκευσης."); } };
-    const getAvailableMonths = () => { const now = new Date(); let start = new Date(now.getFullYear(), now.getMonth(), 1); if (now.getDate() >= 27) start.setMonth(start.getMonth() + 2); else start.setMonth(start.getMonth() + 1); const months = []; for (let i = 0; i < 6; i++) { const m = new Date(start.getFullYear(), start.getMonth() + i, 1); months.push(m.toISOString().slice(0, 7)); } return months; };
+
+    const downloadLogsPDF = async () => {
+        if (!logsPrintRef.current) return;
+        try {
+            const canvas = await html2canvas(logsPrintRef.current, { scale: 1.5 });
+            const imgData = canvas.toDataURL('image/png');
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pdfWidth = pdf.internal.pageSize.getWidth();
+            const pdfHeight = pdf.internal.pageSize.getHeight();
+            const imgProps = pdf.getImageProperties(imgData);
+            const imgHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+            let y = 0;
+            while (y < imgHeight) {
+                if (y > 0) pdf.addPage();
+                pdf.addImage(imgData, 'PNG', 0, -y, pdfWidth, imgHeight);
+                y += pdfHeight;
+            }
+            pdf.save(`Scheduler_Logs_${new Date().toISOString().slice(0, 10)}.pdf`);
+        } catch (e) { console.error(e); alert("Σφάλμα log PDF"); }
+    };
 
     const generateServicePDF = async () => {
         if (!printRef1.current || !printRef2.current) return;
@@ -549,12 +896,18 @@ export const ServicesApp = ({ user, onExit }) => {
 
     const renderPrintRow = (d) => {
         const dateStr = `${currentMonth.getFullYear()}-${String(currentMonth.getMonth() + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const isSpecial = (config.special_dates || []).some(sd => {
+            if (typeof sd === 'string') return sd === dateStr;
+            if (sd.date === dateStr) return true;
+            if (sd.date.startsWith('2000-') && sd.date.slice(5) === dateStr.slice(5)) return true;
+            return false;
+        });
         const isWeekend = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d).getDay() % 6 === 0;
         const dayOfWeek = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), d).getDay();
         return (
-            <tr key={d} style={{ background: isWeekend ? '#e3f2fd' : 'white' }}>
-                <td style={{ border: '1px solid #002F6C', padding: 4, fontWeight: 'bold', width: '30px', textAlign: 'center' }}>{d}</td>
-                <td style={{ border: '1px solid #002F6C', padding: 4, width: '40px', textAlign: 'center' }}>{getDayName(currentMonth.getFullYear(), currentMonth.getMonth(), d)}</td>
+            <tr key={d} style={{ background: isSpecial ? '#fff9c4' : (isWeekend ? '#e3f2fd' : 'white') }}>
+                <td style={{ border: '1px solid #002F6C', padding: 4, fontWeight: 'bold', width: '30px', textAlign: 'center', background: isSpecial ? '#fff9c4' : 'inherit' }}>{d}</td>
+                <td style={{ border: '1px solid #002F6C', padding: 4, width: '40px', textAlign: 'center', background: isSpecial ? '#fff9c4' : 'inherit' }}>{getDayName(currentMonth.getFullYear(), currentMonth.getMonth(), d)}</td>
                 {config.duties.filter(d => !d.is_special).map(duty => Array.from({ length: duty.shifts_per_day }).map((_, shIdx) => {
                     const s = schedule.find(x => x.date === dateStr && x.duty_id === duty.id && x.shift_index === shIdx);
                     let displayText = '';
@@ -646,6 +999,34 @@ export const ServicesApp = ({ user, onExit }) => {
 
     return (
         <div className="app-shell">
+            {/* GLOBAL LOADING RIBBON */}
+            {loading && (
+                <div style={{
+                    position: 'fixed',
+                    bottom: '20px',
+                    left: '20px',
+                    background: 'white',
+                    padding: '15px 25px',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 15px rgba(0,0,0,0.2)',
+                    zIndex: 9999,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '15px',
+                    pointerEvents: 'none'
+                }}>
+                    <div className="spinner" style={{
+                        width: '24px',
+                        height: '24px',
+                        border: '3px solid #f3f3f3',
+                        borderTop: '3px solid #002F6C',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite'
+                    }} />
+                    <span style={{ fontWeight: 600, color: '#333' }}>Φόρτωση...</span>
+                    <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+                </div>
+            )}
             <AppHeader title="Υπηρεσίες" user={user} onExit={onExit} icon={<Calendar size={24} />} />
 
             {isAdmin ? (
@@ -682,6 +1063,12 @@ export const ServicesApp = ({ user, onExit }) => {
                         <FileText size={20} />
                         <span>Γενικές Ρυθμίσεις</span>
                     </button>
+                    {isRoot && (
+                        <button className={tab === 'queues' ? 'active' : ''} onClick={() => setTab('queues')} style={tabBtnStyle}>
+                            <RefreshCw size={20} />
+                            <span>Σειρές</span>
+                        </button>
+                    )}
                 </div>
             ) : (
                 <div className="tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 20 }}>
@@ -696,7 +1083,7 @@ export const ServicesApp = ({ user, onExit }) => {
                 </div>
             )}
 
-            {/* Show Navigation for ALL tabs except Seniority, Duties, Settings (where month doesn't matter as much) */}
+            {/* Show Navigation for ALL tabs except Seniority, Duties, Settings, Queues */}
             {['schedule', 'admin_declare', 'myschedule', 'declare', 'settings'].includes(tab) &&
                 <div style={{
                     display: 'flex',
@@ -715,20 +1102,28 @@ export const ServicesApp = ({ user, onExit }) => {
                     </div>
                     {isAdmin && tab === 'schedule' && (
                         <div style={{ display: 'flex', gap: 10 }}>
-                            <ActionButton onClick={() => setClearModal(true)} icon={Trash2} label="Καθαρισμός" color="#F44336" hoverColor="#d32f2f" />
-                            <ActionButton onClick={() => setSchedulerModal(true)} icon={Play} label="Αυτόματη Ανάθεση" color="#FF9800" hoverColor="#f57c00" />
-                            <ActionButton onClick={generateServicePDF} icon={Printer} label="PDF" color="#2196F3" hoverColor="#1976D2" />
+                            <ActionButton onClick={runClearSchedule} icon={Trash2} label="Καθαρισμός" color="#F44336" hoverColor="#d32f2f" />
+                            <ActionButton onClick={runManualScheduler} icon={Play} label="Αυτόματη Ανάθεση" color="#FF9800" hoverColor="#f57c00" />
+                            <ActionButton onClick={generateServicePDF} icon={Printer} label="Πρόγραμμα PDF" color="#2196F3" hoverColor="#1976D2" />
+                            <ActionButton onClick={downloadLogsPDF} icon={FileText} label="Logs PDF" color="#607d8b" hoverColor="#455a64" />
                         </div>
                     )}
                 </div>}
 
+            {/* Hidden Logs for PDF Generation */}
+            <div style={{ position: 'absolute', left: '-9999px', top: 0, width: '210mm', minHeight: '297mm', padding: '20px', background: 'white', color: 'black' }} ref={logsPrintRef}>
+                <h3 style={{ borderBottom: '2px solid #333', paddingBottom: '10px', marginBottom: '15px' }}>Scheduler Execution Logs</h3>
+                <div style={{ marginBottom: '10px', fontSize: '0.9rem', color: '#666' }}>Generated: {new Date().toLocaleString('el-GR')}</div>
+                <div style={{ fontFamily: 'monospace', fontSize: '10px', whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
+                    {schedulerLogs.map((l, i) => <div key={i} style={{ borderBottom: '1px solid #eee', padding: '2px 0' }}>{l}</div>)}
+                </div>
+            </div>
+
+            {tab === 'queues' && isRoot && <QueueManager user={user} />}
+
             {tab === 'schedule' && (
                 <>
                     {renderCalendar('admin_view')}
-                    <div className="console-log" style={{ maxHeight: '300px', overflowY: 'auto', background: '#f5f5f5', padding: '10px', fontSize: '0.8rem', marginTop: '20px', border: '1px solid #ddd', borderRadius: 8 }}>
-                        <h4>Αρχείο Καταγραφής</h4>
-                        <div> {schedulerLogs.length > 0 ? schedulerLogs.map((l, i) => <div key={i} style={{ borderBottom: '1px solid #eee', padding: '2px 0' }}>{l}</div>) : <em>Δεν υπάρχουν καταγραφές.</em>} </div>
-                    </div>
                 </>
             )}
 
@@ -809,8 +1204,77 @@ export const ServicesApp = ({ user, onExit }) => {
 
             {tab === 'balance' && isAdmin && (
                 <div className="admin-section">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}> <div> <h3 style={{ margin: 0 }}>Ισοζύγιο Υπηρεσιών (Εύρος Ελέγχου)</h3> <p className="text-gray-500 text-sm">Επιλέξτε εύρος για υπολογισμό υπολοίπου.</p> </div> <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}> <label>Από:</label> <input type="month" value={balanceRange.start} onChange={(e) => setBalanceRange({ ...balanceRange, start: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} /> <label>Έως:</label> <input type="month" value={balanceRange.end} onChange={(e) => setBalanceRange({ ...balanceRange, end: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} /> </div> </div>
-                    <table><thead><tr><th>Υπάλληλος</th> <th>Σύνολο (Πραγμ. / Με Πλεονέκτημα)</th> <th style={{ background: '#e3f2fd', color: '#002F6C' }}>ΣΚ (Εύρος)</th> {config.duties.filter(d => d.is_weekly).map(d => <th key={d.id}>{d.name}</th>)} {config.duties.filter(d => d.is_off_balance && !d.is_weekly).map(d => <th key={d.id}>{d.name}</th>)} </tr></thead><tbody> {balanceStats.map(s => (<tr key={s.name}> <td>{s.name}</td> <td> <span style={{ fontWeight: 'bold' }}>{s.total}</span> {s.total !== s.effective_total && (<span style={{ color: 'gray', marginLeft: 5, fontSize: '0.9em' }}> ({s.effective_total}) </span>)} </td> <td style={{ background: '#e3f2fd', textAlign: 'center', fontWeight: 'bold' }}> {s.sk_score || 0} </td> {config.duties.filter(d => d.is_weekly).map(d => { const actual = s.duty_counts?.[d.id] || 0; return <td key={d.id}>{actual}</td> })} {config.duties.filter(d => d.is_off_balance && !d.is_weekly).map(d => { const actual = s.duty_counts?.[d.id] || 0; return <td key={d.id}>{actual}</td> })} </tr>))} </tbody></table>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                        <div> <h3 style={{ margin: 0 }}>Ισοζύγιο Υπηρεσιών</h3> <p className="text-gray-500 text-sm">Επιλέξτε εύρος για υπολογισμό ισοζυγίου.</p> </div>
+                        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                            <button onClick={loadSpecialReport} style={{ background: '#7b1fa2', color: 'white', border: 'none', borderRadius: 4, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+                                <FileText size={16} /> Αργίες
+                            </button>
+                            <label>Από:</label> <input type="month" value={balanceRange.start} onChange={(e) => setBalanceRange({ ...balanceRange, start: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                            <label>Έως:</label> <input type="month" value={balanceRange.end} onChange={(e) => setBalanceRange({ ...balanceRange, end: e.target.value })} style={{ padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }} />
+                        </div>
+                    </div>
+                    {(() => {
+                        const minNormalSpecial = balanceStats.length > 0 ? Math.min(...balanceStats.map(s => s.special_normal || 0)) : 0;
+                        const minOffBalSpecial = balanceStats.length > 0 ? Math.min(...balanceStats.map(s => s.special_offbalance || 0)) : 0;
+                        const hasOffBalance = config.duties.some(d => d.is_off_balance && !d.is_weekly);
+
+                        return (
+                            <table className="center-table" style={{ textAlign: 'center' }}>
+                                <thead>
+                                    <tr style={{ textAlign: 'center' }}>
+                                        <th style={{ textAlign: 'center' }}>Υπάλληλος</th>
+                                        <th style={{ textAlign: 'center' }}>Πραγματικό Σύνολο (Με Πλεονέκτημα)</th>
+                                        <th style={{ background: '#e3f2fd', color: '#002F6C', textAlign: 'center' }}>ΣΚ (Εύρος 5 μηνών)</th>
+                                        <th style={{ background: '#fff3e0', color: '#e65100', textAlign: 'center' }}>Αργίες (Κανον.)</th>
+                                        {config.duties.filter(d => d.is_weekly).map(d => <th key={d.id} style={{ textAlign: 'center' }}>{d.name}</th>)}
+                                        {hasOffBalance && <th style={{ background: '#eceff1', color: '#455a64', textAlign: 'center' }}>Αργίες (Εκτός)</th>}
+                                        {config.duties.filter(d => d.is_off_balance && !d.is_weekly).map(d => <th key={d.id} style={{ textAlign: 'center' }}>{d.name}</th>)}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {balanceStats.map(s => (
+                                        <tr key={s.name} style={{ textAlign: 'center' }}>
+                                            <td style={{ textAlign: 'center' }}>{s.name}</td>
+                                            <td style={{ textAlign: 'center' }}>
+                                                <span style={{ fontWeight: 'bold' }}>{s.total}</span>
+                                                {s.total !== s.effective_total && (<span style={{ color: 'gray', marginLeft: 5, fontSize: '0.9em' }}> ({s.effective_total}) </span>)}
+                                            </td>
+                                            <td style={{ background: '#e3f2fd', textAlign: 'center', fontWeight: 'bold' }}>
+                                                {s.sk_score || 0}
+                                            </td>
+                                            <td style={{ background: '#fff3e0', textAlign: 'center', fontWeight: 'bold' }}>
+                                                {s.special_normal || 0}
+                                                {(s.special_normal || 0) > minNormalSpecial && (
+                                                    <span style={{ color: '#f59e0b', marginLeft: 5 }}>
+                                                        {'★'.repeat((s.special_normal || 0) - minNormalSpecial)}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            {config.duties.filter(d => d.is_weekly).map(d => {
+                                                const actual = s.duty_counts?.[d.id] || 0;
+                                                return <td key={d.id} style={{ textAlign: 'center' }}>{actual}</td>
+                                            })}
+                                            {hasOffBalance && (
+                                                <td style={{ background: '#eceff1', textAlign: 'center', fontWeight: 'bold' }}>
+                                                    {s.special_offbalance || 0}
+                                                    {(s.special_offbalance || 0) > minOffBalSpecial && (
+                                                        <span style={{ color: '#f59e0b', marginLeft: 5 }}>
+                                                            {'★'.repeat((s.special_offbalance || 0) - minOffBalSpecial)}
+                                                        </span>
+                                                    )}
+                                                </td>
+                                            )}
+                                            {config.duties.filter(d => d.is_off_balance && !d.is_weekly).map(d => {
+                                                const actual = s.duty_counts?.[d.id] || 0;
+                                                return <td key={d.id} style={{ textAlign: 'center' }}>{actual}</td>
+                                            })}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        );
+                    })()}
                 </div>
             )}
 
@@ -862,8 +1326,8 @@ export const ServicesApp = ({ user, onExit }) => {
                 <div className="admin-section">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                         <div>
-                            <h3>Διαχείριση Ειδικών Ημερομηιών</h3>
-                            <p style={{ color: '#666', margin: 0 }}>Ορίστε αργίες και ειδικές ημέρες (δεν χρεώνονται ως κανονικές βάρδιες).</p>
+                            <h3>Διαχείριση Ειδικών Ημερομηνιών</h3>
+                            <p style={{ color: '#666', margin: 0 }}>Ορίστε αργίες και ειδικές ημέρες.</p>
                         </div>
                     </div>
 
@@ -904,6 +1368,12 @@ export const ServicesApp = ({ user, onExit }) => {
                         >
                             <Plus size={18} /> Προσθήκη
                         </button>
+                        <button
+                            onClick={addGreekHolidays}
+                            style={{ height: 42, marginTop: 22, display: 'flex', alignItems: 'center', gap: 5, background: '#1565C0', color: 'white', border: 'none', borderRadius: 4, padding: '0 15px', cursor: 'pointer' }}
+                        >
+                            <CalIcon size={18} /> Αργίες 20 ετών
+                        </button>
                     </div>
 
                     {/* Cards Grid */}
@@ -928,18 +1398,58 @@ export const ServicesApp = ({ user, onExit }) => {
 
             {modal && (
                 <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }} onClick={() => setModal(null)}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: 10, marginBottom: 20 }}> <h3 style={{ margin: 0 }}>Βάρδιες: {formatDate(modal.date)}</h3> <button onClick={() => setModal(null)} style={{ background: 'transparent', color: '#666', fontSize: '1.5rem', padding: 0 }}>×</button> </div>
-                        {config.duties.filter(d => !d.is_special).map(d => (<div key={d.id} style={{ marginBottom: 15, borderBottom: '1px solid #eee', paddingBottom: 10 }}> <h4 style={{ margin: '0 0 10px 0', color: '#002F6C' }}>{d.name}</h4> {Array.from({ length: d.shifts_per_day }).map((_, idx) => { const assign = schedule.find(s => s.date === modal.date && s.duty_id === d.id && s.shift_index === idx); return (<div key={idx} style={{ display: 'flex', gap: 10, marginBottom: 5, alignItems: 'center' }}> <span style={{ minWidth: 120, fontSize: '0.9rem' }}>Βάρδια {idx + 1} <small style={{ color: '#666' }}>({d.default_hours[idx]})</small>:</span> <select value={assign?.employee_id || ''} onChange={(e) => assignEmployee(modal.date, d.id, idx, parseInt(e.target.value))} style={{ flex: 1, padding: 5, borderRadius: 4, border: '1px solid #ccc' }} > <option value="">-- Ανάθεση --</option> {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)} </select> </div>); })} </div>))}
-                        <div style={{ background: '#f9f9f9', padding: 10, borderRadius: 8, marginTop: 20 }}> <h4 style={{ margin: '0 0 10px 0', color: '#d32f2f', display: 'flex', gap: 5, alignItems: 'center' }}><AlertTriangle size={16} /> Έκτακτες / Ειδικές Υπηρεσίες</h4> <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}> <select id="sp_duty" style={{ padding: 5, borderRadius: 4 }}><option value="">Επιλογή Ειδικής Υπηρεσίας...</option>{config.duties.filter(d => d.is_special).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select> <select id="sp_emp" style={{ padding: 5, borderRadius: 4 }}><option value="">Επιλογή Υπαλλήλου...</option>{employees.map(e => { return <option key={e.id} value={e.id}>{e.name}</option> })}</select> <button onClick={() => { const dId = document.getElementById('sp_duty').value; const eId = document.getElementById('sp_emp').value; if (dId && eId) assignEmployee(modal.date, parseInt(dId), 0, parseInt(eId)); }} style={{ background: '#d32f2f', padding: '5px 10px' }}><Plus size={16} /></button> </div> {schedule.filter(s => s.date === modal.date && config.duties.find(d => d.id === s.duty_id)?.is_special).map(s => (<div key={s.duty_id} style={{ marginTop: 10, padding: 5, background: 'white', borderRadius: 4, border: '1px solid #ddd', display: 'flex', justifyContent: 'space-between' }}><span><strong>{config.duties.find(d => d.id === s.duty_id).name}</strong>: {employees.find(e => e.id === s.employee_id)?.name}</span></div>))} </div>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ padding: '30px', maxHeight: '95vh', display: 'flex', flexDirection: 'column' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: 10, marginBottom: 20, flexShrink: 0 }}> <h3 style={{ margin: 0 }}>Βάρδιες: {formatDate(modal.date)}</h3> <button onClick={() => setModal(null)} style={{ background: 'transparent', color: '#666', fontSize: '1.5rem', padding: 0 }}>×</button> </div>
+                        <div style={{ overflowY: 'auto', flex: 1, paddingRight: 5 }}>
+                            {config.duties.filter(d => !d.is_special).map(d => (<div key={d.id} style={{ marginBottom: 15, borderBottom: '1px solid #eee', paddingBottom: 10 }}> <h4 style={{ margin: '0 0 10px 0', color: '#002F6C' }}>{d.name}</h4> {Array.from({ length: d.shifts_per_day }).map((_, idx) => { const assign = schedule.find(s => s.date === modal.date && s.duty_id === d.id && s.shift_index === idx); return (<div key={idx} style={{ display: 'flex', gap: 10, marginBottom: 5, alignItems: 'center' }}> <span style={{ minWidth: 120, fontSize: '0.9rem' }}>Βάρδια {idx + 1} <small style={{ color: '#666' }}>({d.default_hours[idx]})</small>:</span> <select value={assign?.employee_id || ''} onChange={(e) => assignEmployee(modal.date, d.id, idx, parseInt(e.target.value))} style={{ flex: 1, padding: 5, borderRadius: 4, border: '1px solid #ccc' }} > <option value="">-- Ανάθεση --</option> {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)} </select> </div>); })} </div>))}
+                            <div style={{ background: '#f9f9f9', padding: 10, borderRadius: 8, marginTop: 20 }}> <h4 style={{ margin: '0 0 10px 0', color: '#d32f2f', display: 'flex', gap: 5, alignItems: 'center' }}><AlertTriangle size={16} /> Έκτακτες / Ειδικές Υπηρεσίες</h4> <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}> <select id="sp_duty" style={{ padding: 5, borderRadius: 4 }}><option value="">Επιλογή Ειδικής Υπηρεσίας...</option>{config.duties.filter(d => d.is_special).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select> <select id="sp_emp" style={{ padding: 5, borderRadius: 4 }}><option value="">Επιλογή Υπαλλήλου...</option>{employees.map(e => { return <option key={e.id} value={e.id}>{e.name}</option> })}</select> <button onClick={() => { const dId = document.getElementById('sp_duty').value; const eId = document.getElementById('sp_emp').value; if (dId && eId) assignEmployee(modal.date, parseInt(dId), 0, parseInt(eId)); }} style={{ background: '#d32f2f', padding: '5px 10px' }}><Plus size={16} /></button> </div> {schedule.filter(s => s.date === modal.date && config.duties.find(d => d.id === s.duty_id)?.is_special).map(s => (<div key={s.duty_id} style={{ marginTop: 10, padding: 5, background: 'white', borderRadius: 4, border: '1px solid #ddd', display: 'flex', justifyContent: 'space-between' }}><span><strong>{config.duties.find(d => d.id === s.duty_id).name}</strong>: {employees.find(e => e.id === s.employee_id)?.name}</span></div>))} </div>
+                        </div>
                     </div>
                 </div>
             )}
 
-            {schedulerModal && (<div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }} onClick={() => setSchedulerModal(false)}> <div className="modal-content" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}> <h3>Εκτέλεση Αυτόματης Ανάθεσης</h3> <p>Επιλέξτε τον μήνα για ανάθεση:</p> <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}> <label>Μήνας: <select onChange={e => setSchedulerRange({ ...schedulerRange, start: e.target.value })}><option value="">Επιλογή...</option>{getAvailableMonths().map(m => <option key={m} value={m}>{m}</option>)}</select></label> <div style={{ marginTop: 10, color: '#d32f2f', fontSize: '0.9rem', fontStyle: 'italic' }}>* Θα γίνει πλήρης αντικατάσταση.</div></div> <div style={{ marginTop: 20, display: 'flex', gap: 10 }}> <button onClick={runManualScheduler}>Εκτέλεση</button> <button className="secondary" onClick={() => setSchedulerModal(false)}>Ακύρωση</button> </div> </div> </div>)}
-            {clearModal && (<div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }} onClick={() => setClearModal(false)}> <div className="modal-content" style={{ maxWidth: 400 }} onClick={(e) => e.stopPropagation()}> <h3>Καθαρισμός Προγράμματος</h3> <p>Επιλέξτε τον μήνα προς καθαρισμό (Τα κλειδωμένα διατηρούνται):</p> <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}> <label>Μήνας: <input type="month" value={clearRange.start} onChange={e => setClearRange({ ...clearRange, start: e.target.value })} /></label> </div> <div style={{ marginTop: 20, display: 'flex', gap: 10 }}> <button onClick={runClearSchedule} style={{ background: '#F44336' }}>Καθαρισμός</button> <button className="secondary" onClick={() => setClearModal(false)}>Ακύρωση</button> </div> </div> </div>)}
+
             <div id="print-area-1" ref={printRef1} style={{ display: 'none', padding: 20, background: 'white', width: '297mm', height: '210mm' }}> <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, borderBottom: '2px solid #002F6C', paddingBottom: 10, alignItems: 'flex-start' }}> <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}> <img src="/aade-logo.png" style={{ height: 40, objectFit: 'contain', alignSelf: 'flex-start' }} alt="AADE" /> <div style={{ color: '#002F6C', fontWeight: 'bold', fontSize: '1.1rem' }}>Τελωνείο Χανίων</div> </div> <div style={{ textAlign: 'right', fontSize: '0.9rem', color: '#333' }}> <div>Χανιά, {protocolData.protocol_date || '...'}</div> <div>Αρ. Πρωτ.: {protocolData.protocol_num || '...'}</div> </div> </div> <h2 style={{ textAlign: 'center', color: '#002F6C', textTransform: 'uppercase', margin: '10px 0' }}> {toGreekUpper("Πρόγραμμα Υπηρεσιών " + currentMonth.toLocaleString('el-GR', { month: 'long', year: 'numeric' }))} </h2> <table className="print-table" style={{ width: '100%', fontSize: '8pt', textAlign: 'center', borderCollapse: 'collapse' }}><thead><tr style={{ background: '#002F6C', color: 'white' }}><th style={{ border: '1px solid #000', padding: 5, textAlign: 'center' }}>Ημ/νία</th><th style={{ border: '1px solid #000', padding: 5, textAlign: 'center' }}>Ημέρα</th>{config.duties.filter(d => !d.is_special).map(d => Array.from({ length: d.shifts_per_day }).map((_, i) => <th key={`${d.id}-${i}`} style={{ border: '1px solid #000', padding: 5, textAlign: 'center' }}>{d.name} <br /> <small>({d.default_hours[i]})</small></th>))}</tr></thead><tbody>{Array.from({ length: 15 }).map((_, i) => renderPrintRow(i + 1))}</tbody></table> </div>
             <div id="print-area-2" ref={printRef2} style={{ display: 'none', padding: 20, background: 'white', width: '297mm', height: '210mm' }}> <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10, borderBottom: '2px solid #002F6C', paddingBottom: 10, alignItems: 'flex-start' }}> <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}> <img src="/aade-logo.png" style={{ height: 40, objectFit: 'contain', alignSelf: 'flex-start' }} alt="AADE" /> <div style={{ color: '#002F6C', fontWeight: 'bold', fontSize: '1.1rem' }}>Τελωνείο Χανίων</div> </div> <div style={{ textAlign: 'right', fontSize: '0.9rem', color: '#333' }}> <div>Χανιά, {protocolData.protocol_date || '...'}</div> <div>Αρ. Πρωτ.: {protocolData.protocol_num || '...'}</div> </div> </div> <h2 style={{ textAlign: 'center', color: '#002F6C', textTransform: 'uppercase', margin: '10px 0' }}> {toGreekUpper("Πρόγραμμα Υπηρεσιών " + currentMonth.toLocaleString('el-GR', { month: 'long', year: 'numeric' }))} </h2> <table className="print-table" style={{ width: '100%', fontSize: '8pt', textAlign: 'center', borderCollapse: 'collapse' }}><thead><tr style={{ background: '#002F6C', color: 'white' }}><th style={{ border: '1px solid #000', padding: 5, textAlign: 'center' }}>Ημ/νία</th><th style={{ border: '1px solid #000', padding: 5, textAlign: 'center' }}>Ημέρα</th>{config.duties.filter(d => !d.is_special).map(d => Array.from({ length: d.shifts_per_day }).map((_, i) => <th key={`${d.id}-${i}`} style={{ border: '1px solid #000', padding: 5, textAlign: 'center' }}>{d.name} <br /> <small>({d.default_hours[i]})</small></th>))}</tr></thead><tbody>{Array.from({ length: getDaysInMonth(currentMonth.getFullYear(), currentMonth.getMonth()) - 15 }).map((_, i) => renderPrintRow(i + 16))}</tbody></table> </div>
+            {/* SPECIAL REPORT MODAL */}
+            {showSpecialReport && (
+                <div className="modal-overlay" onClick={() => setShowSpecialReport(false)}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: 900, maxHeight: '85vh' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                            <h3>Αναφορά Αργιών & Εορτών (Ιστορικό)</h3>
+                            <button onClick={() => setShowSpecialReport(false)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}><X size={24} /></button>
+                        </div>
+                        <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+                            <table className="center-table">
+                                <thead>
+                                    <tr>
+                                        <th>Υπάλληλος</th>
+                                        <th>Σύνολο Αργιών</th>
+                                        <th style={{ width: '60%' }}>Λεπτομέρειες</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {specialReportData.map((row, idx) => (
+                                        <tr key={idx}>
+                                            <td style={{ fontWeight: 500 }}>{row.name}</td>
+                                            <td style={{ fontWeight: 'bold', fontSize: '1.1rem', color: '#002F6C' }}>{row.count}</td>
+                                            <td style={{ fontSize: '0.9rem', color: '#555' }}>
+                                                {row.details.join(', ')}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                    {specialReportData.length === 0 && (
+                                        <tr><td colSpan={3} style={{ textAlign: 'center', padding: 20, color: '#999' }}>Δεν βρέθηκαν εγγραφές.</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div style={{ marginTop: 20, textAlign: 'right' }}>
+                            <button onClick={() => setShowSpecialReport(false)} style={{ background: '#666' }}>Κλείσιμο</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
